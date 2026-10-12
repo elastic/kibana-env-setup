@@ -151,10 +151,10 @@ elasticsearch.hosts:
 Called automatically in the left pane of every servers window:
 
 1. Loads `nvm` and switches to the correct Node version (reads `.nvmrc`)
-2. Runs `yarn kbn bootstrap`
-3. Starts `yarn es snapshot --license trial` with correct ports and data path
+2. Runs `yarn kbn bootstrap` — or `pnpm kbn bootstrap` on pnpm branches (auto-detected from `package.json` / `pnpm-lock.yaml`; runs `corepack enable` if pnpm is missing)
+3. Starts `yarn es snapshot --license trial` (`pnpm es snapshot` on pnpm branches) with correct ports and data path
 4. Watches `/tmp/es-<name>.log` for ES ready signal
-5. When ES is ready → sends `nvm use` + `yarn start` to the right pane automatically
+5. When ES is ready → sends `nvm use` + `yarn start` (or `pnpm start`) to the right pane automatically
 
 **Manual usage:**
 ```bash

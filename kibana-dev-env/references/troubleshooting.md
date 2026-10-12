@@ -12,11 +12,19 @@ Common issues and their solutions when working with the Kibana dev environment.
 - Wrong Node version: check `.nvmrc` and run `nvm use`
 - ES data directory permissions: check `~/Documents/Development/es_data/` is writable
 
+## Bootstrap fails: "packageManager … yarn@pnpm@…" / Corepack message
+
+**Symptom:** `kbn-start.sh` fails at the bootstrap step with `This project's package.json defines "packageManager": "yarn@pnpm@…"` and a hint to run `corepack enable`.
+
+**Cause:** The branch uses pnpm but an older copy of `kbn-start.sh` ran `yarn`. Current `kbn-start.sh` detects pnpm per worktree and runs `corepack enable` if needed.
+
+**Fix:** Make sure `~/bin/kbn-start.sh` points at the current script, then re-run it. Manual equivalent in the worktree: `corepack enable && pnpm kbn bootstrap`. Corepack shims are per Node version, so a new `.nvmrc` version may need `corepack enable` again.
+
 ## Kibana pane is blank after restart
 
 **Symptom:** After `restart`, ES starts but pane 1 (Kibana) doesn't run anything.
 
-**Cause:** `kbn-start.sh` sends `yarn start` to pane 1 via `tmux send-keys`. If pane 1
+**Cause:** `kbn-start.sh` sends `yarn start` (or `pnpm start` on pnpm branches) to pane 1 via `tmux send-keys`. If pane 1
 still has a dying process (Kibana's 30-second graceful shutdown), the command gets lost.
 
 **Fix:** Run `~/dev-start.sh restart feat` again — it handles port polling, force-kill,

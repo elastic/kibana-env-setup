@@ -871,7 +871,7 @@
         <div class="pane-cmd" style="padding-left:16px">--kibana-port 5601 \</div>
         <div class="pane-cmd" style="padding-left:16px">--es-port 9200</div>
         <div class="pane-output">
-          <span class="ok">▶ yarn kbn bootstrap...</span><br>
+          <span class="ok">▶ yarn|pnpm kbn bootstrap...</span><br>
           <span class="ok">▶ Starting ES...</span><br>
           <span class="hi">{"message":"started"}</span><br>
           <span class="ok">succ kbn/es setup complete</span><br>
@@ -880,7 +880,7 @@
       </div>
       <div class="tmux-pane">
         <div class="pane-label">right — Kibana (auto-started)</div>
-        <div class="pane-cmd">$ yarn start --no-base-path \</div>
+        <div class="pane-cmd">$ yarn|pnpm start --no-base-path \</div>
         <div class="pane-cmd" style="padding-left:16px">--host kibana-feat.local \</div>
         <div class="pane-cmd" style="padding-left:16px">--port 5601</div>
         <div class="pane-output">
@@ -1007,7 +1007,7 @@
   <div class="two-col">
     <div class="card card-blue">
       <div class="card-label">Key insight</div>
-      <p style="font-size:0.8rem">All worktrees share the same <code style="color:var(--cyan)">.git</code> history — only working files differ. <code>node_modules</code> is separate per worktree (one-time <code>yarn kbn bootstrap</code> per worktree).</p>
+      <p style="font-size:0.8rem">All worktrees share the same <code style="color:var(--cyan)">.git</code> history — only working files differ. <code>node_modules</code> is separate per worktree (one-time <code>yarn kbn bootstrap</code> — or <code>pnpm kbn bootstrap</code> on pnpm branches, auto-detected — per worktree).</p>
     </div>
     <div class="card card-yellow">
       <div class="card-label">Port assignment</div>
@@ -1045,7 +1045,7 @@
       <div class="as-note">switches to correct Node version (reads .nvmrc)</div>
     </div>
     <div class="autostart-row" style="padding-left:40px">
-      <div class="as-box" style="background:var(--surface2);border-color:var(--border2);color:var(--cyan)">yarn kbn bootstrap</div>
+      <div class="as-box" style="background:var(--surface2);border-color:var(--border2);color:var(--cyan)">yarn|pnpm kbn bootstrap</div>
       <div class="as-arrow">→</div>
       <div class="as-note">installs deps for this worktree</div>
     </div>
@@ -1055,7 +1055,7 @@
       <div class="as-note">checks for non-localhost ES URL (supports template + oblt-cli YAML formats)</div>
     </div>
     <div class="autostart-row" style="padding-left:60px">
-      <div class="as-box" style="background:var(--surface2);border-color:var(--border2);color:var(--cyan)">LOCAL → yarn es snapshot --license trial</div>
+      <div class="as-box" style="background:var(--surface2);border-color:var(--border2);color:var(--cyan)">LOCAL → yarn|pnpm es snapshot --license trial</div>
       <div class="as-arrow">→</div>
       <div class="as-note">starts ES, pipes to /tmp/es-*.log, tail watches for trigger</div>
     </div>
@@ -1065,7 +1065,7 @@
       <div class="as-note">ES already running in cloud (oblt-cli), Kibana reads host from config</div>
     </div>
     <div class="autostart-row" style="padding-left:40px">
-      <div class="as-box" style="background:var(--green-bg);border-color:var(--green-bd);color:var(--green)">nvm use + yarn start (auto-fired)</div>
+      <div class="as-box" style="background:var(--green-bg);border-color:var(--green-bd);color:var(--green)">nvm use + yarn|pnpm start (auto-fired)</div>
       <div class="as-arrow">→</div>
       <div class="as-note">sent to right pane — immediately for remote ES, after trigger for local ES</div>
     </div>

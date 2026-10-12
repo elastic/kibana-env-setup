@@ -342,6 +342,18 @@ get_kibana_version() {
   sed -n 's/.*"version" *: *"\([^"]*\)".*/\1/p' "$pkg" | head -1
 }
 
+# Detect which package manager a Kibana worktree uses (newer branches: pnpm, older: yarn).
+# Usage: detect_pkg_manager <kibana_dir>   → prints "pnpm" or "yarn"
+# Same logic as in kbn-start.sh — keep them in sync.
+detect_pkg_manager() {
+  local dir="$1"
+  if grep -qE '"packageManager" *: *"pnpm@' "$dir/package.json" 2>/dev/null || [[ -f "$dir/pnpm-lock.yaml" ]]; then
+    echo "pnpm"
+  else
+    echo "yarn"
+  fi
+}
+
 # Extract major.minor from a version string (e.g. "9.5.0" → "9.5")
 major_minor() {
   echo "${1%.*}"
@@ -422,8 +434,10 @@ build_kibana_session() {
   # 6: ftr [left: ftr server | right: ftr runner]
   tmux new-window -t "$session" -n "ftr" -c "$dir"
   tmux split-window -h -c "$dir" -t "${session}:ftr"
-  tmux send-keys -t "${session}:ftr.0" "export NVM_DIR=\"\$HOME/.nvm\" && [[ -s \"\$NVM_DIR/nvm.sh\" ]] && source \"\$NVM_DIR/nvm.sh\" && nvm use && yarn test:ftr:server"
-  tmux send-keys -t "${session}:ftr.1" "export NVM_DIR=\"\$HOME/.nvm\" && [[ -s \"\$NVM_DIR/nvm.sh\" ]] && source \"\$NVM_DIR/nvm.sh\" && nvm use && yarn test:ftr:runner"
+  local pm
+  pm=$(detect_pkg_manager "$dir")
+  tmux send-keys -t "${session}:ftr.0" "export NVM_DIR=\"\$HOME/.nvm\" && [[ -s \"\$NVM_DIR/nvm.sh\" ]] && source \"\$NVM_DIR/nvm.sh\" && nvm use && $pm test:ftr:server"
+  tmux send-keys -t "${session}:ftr.1" "export NVM_DIR=\"\$HOME/.nvm\" && [[ -s \"\$NVM_DIR/nvm.sh\" ]] && source \"\$NVM_DIR/nvm.sh\" && nvm use && $pm test:ftr:runner"
   tmux select-pane -t "${session}:ftr.0"
 
   tmux select-window -t "${session}:servers"

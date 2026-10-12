@@ -7,7 +7,7 @@ A tmux + git worktrees setup that eliminates context-switching overhead, runs mu
 ## What it does
 
 - Creates two permanent tmux sessions: `kibana-main` (main branch) and `kibana-feat` (your active feature branch)
-- Auto-runs `yarn kbn bootstrap`, starts ES, and launches Kibana once ES is ready — all from a single command. Supports both local ES and remote ES (oblt-cli / Elastic Cloud)
+- Auto-runs `yarn kbn bootstrap` (or `pnpm kbn bootstrap` on branches that use pnpm — detected per worktree), starts ES, and launches Kibana once ES is ready — all from a single command. Supports both local ES and remote ES (oblt-cli / Elastic Cloud)
 - Manages git worktrees so each session has its own isolated checkout
 - Assigns ports automatically — `kibana-feat` always gets the default ports (5601/9200) so you never need to remember them
 - Spins up temporary sessions for PR reviews or hotfixes alongside your active work
@@ -280,7 +280,9 @@ By default, `renew` regenerates `kibana.dev.yml` for **all** compatible remote s
 
 ### How it works
 
-When `--remote` is passed, `dev-start.sh` generates `kibana.dev.yml` using the credentials from `~/.kibana-remote-es.yml` instead of the local ES template. `kbn-start.sh` auto-detects the remote URL and skips `yarn es snapshot`, starting Kibana directly.
+When `--remote` is passed, `dev-start.sh` generates `kibana.dev.yml` using the credentials from `~/.kibana-remote-es.yml` instead of the local ES template. `kbn-start.sh` auto-detects the remote URL and skips `yarn es snapshot` (`pnpm es snapshot` on pnpm branches), starting Kibana directly.
+
+**yarn vs pnpm:** newer Kibana branches (e.g. 9.5.x) use pnpm, older ones still use yarn. `kbn-start.sh` picks the right one per worktree (pnpm if `package.json` declares `"packageManager": "pnpm@…"` or `pnpm-lock.yaml` exists) and runs `corepack enable` if `pnpm` isn't available for the active Node version.
 
 Without `--remote`, the default local ES setup is used. To switch between local and remote, just re-run `switch` with or without the flag — no manual config editing needed.
 

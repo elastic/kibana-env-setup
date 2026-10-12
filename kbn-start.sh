@@ -12,7 +12,8 @@
 #                 [--kibana-port N] [--es-port N] [--host hostname]
 #
 #  ENVIRONMENT:
-#    KBN_EXTRA_ARGS  — extra flags appended to `yarn start`
+#    KBN_EXTRA_ARGS  — extra flags appended to `yarn start` / `pnpm start`
+#                      (package manager is auto-detected per worktree)
 #                      (set in ~/.kibana-dev.conf to persist across launches)
 #
 #  EXAMPLES:
@@ -114,8 +115,23 @@ export NVM_DIR="$HOME/.nvm"
 [[ -s "$NVM_DIR/nvm.sh" ]] && source "$NVM_DIR/nvm.sh"
 nvm use
 
-echo "▶ Running yarn kbn bootstrap..."
-yarn kbn bootstrap
+# ── Package manager (yarn vs pnpm) ────────────────────────
+# Newer Kibana branches (e.g. 9.5.x) use pnpm; older ones (e.g. 9.6.0 at the time
+# of writing) still use yarn. Decide per worktree: pnpm when package.json declares
+# "packageManager": "pnpm@..." or a pnpm-lock.yaml exists, otherwise yarn.
+# (Same logic lives in dev-start.sh for the FTR windows — keep them in sync.)
+PM="yarn"
+if grep -qE '"packageManager" *: *"pnpm@' package.json 2>/dev/null || [[ -f pnpm-lock.yaml ]]; then
+  PM="pnpm"
+  # pnpm ships via Corepack; shims are per Node version, so enable it if missing.
+  if ! command -v pnpm >/dev/null 2>&1; then
+    echo "▶ pnpm not found — running corepack enable..."
+    corepack enable
+  fi
+fi
+
+echo "▶ Running ${PM} kbn bootstrap..."
+${PM} kbn bootstrap
 
 # ── Detect remote ES from kibana.dev.yml ──────────────────
 KIBANA_DEV_YML="config/kibana.dev.yml"
@@ -143,7 +159,7 @@ if [[ "$USE_REMOTE_ES" == true ]]; then
     C-m
   sleep 2
   tmux send-keys -t "$TMUX_TARGET_PANE" \
-    "yarn start --no-base-path --host=${KIBANA_HOST} --port=${KIBANA_PORT} ${KBN_EXTRA_ARGS}" \
+    "${PM} start --no-base-path --host=${KIBANA_HOST} --port=${KIBANA_PORT} ${KBN_EXTRA_ARGS}" \
     C-m
   echo "✅  Kibana starting on http://${KIBANA_HOST}:${KIBANA_PORT} → ES: ${ES_HOST_LINE}"
   echo "    (ES host is configured in ${KIBANA_DEV_YML})"
@@ -157,14 +173,14 @@ else
           C-m
         sleep 2
         tmux send-keys -t "$TMUX_TARGET_PANE" \
-          "yarn start --no-base-path --host=${KIBANA_HOST} --port=${KIBANA_PORT} --elasticsearch.hosts=http://localhost:${ES_PORT} ${KBN_EXTRA_ARGS}" \
+          "${PM} start --no-base-path --host=${KIBANA_HOST} --port=${KIBANA_PORT} --elasticsearch.hosts=http://localhost:${ES_PORT} ${KBN_EXTRA_ARGS}" \
           C-m
         break
       fi
     done
   ) &
 
-  yarn es snapshot \
+  ${PM} es snapshot \
     --license trial \
     -E node.name="${ES_DATA_FOLDER}" \
     -E http.port="${ES_PORT}" \

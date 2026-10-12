@@ -48,7 +48,11 @@ Never suggest raw tmux commands (`tmux attach`, `tmux send-keys`, etc.) to the
 developer. Always use the `dev-start.sh` CLI — it wraps all tmux operations and
 handles port assignments, config generation, and process lifecycle automatically.
 Similarly, `kbn-start.sh` handles `yarn start` with the correct port arguments —
-never suggest running `yarn start` directly without port flags.
+never suggest running `yarn start` directly without port flags. Newer Kibana branches
+(e.g. 9.5.x) use **pnpm** instead of yarn; `kbn-start.sh` detects this per worktree
+(`"packageManager": "pnpm@…"` in `package.json` or a `pnpm-lock.yaml`) and uses
+`pnpm kbn bootstrap` / `pnpm es snapshot` / `pnpm start`, running `corepack enable`
+if pnpm is missing. Don't tell the user to run yarn on a pnpm branch (or vice versa).
 
 `kbn-start.sh` also handles Node version switching (`nvm use`) automatically before
 starting ES or Kibana. Never tell the developer to run `nvm use` manually — the
@@ -97,7 +101,7 @@ Each tmux session has these windows:
 
 | Window    | Purpose                                    |
 |-----------|--------------------------------------------|
-| servers   | Pane 0: ES (or kbn-start.sh), Pane 1: Kibana (`yarn start` with port flags) |
+| servers   | Pane 0: ES (or kbn-start.sh), Pane 1: Kibana (`yarn start` / `pnpm start` with port flags) |
 | cursor    | IDE MCP config, KIBANA_URL set              |
 | scripts   | Pre-populated data ingestion commands       |
 | git       | Git operations, branch management           |
