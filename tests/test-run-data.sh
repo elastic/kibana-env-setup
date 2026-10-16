@@ -171,6 +171,19 @@ it "allows synthetics on local ES"
   fi
   assert_eq "allowed" "$result"
 
+describe "synthetics preflight guards (regression: stale agent image / missing fleet-server-policy)"
+
+# These guard the failure modes we hit: exit 143 (no fleet-server-policy) and
+# "seccomp policy already registered" (stale cached agent image).
+it "pulls BOTH agent images (Fleet Server + synthetics agent)"
+  assert_file_contains "$_SELF_DIR/../run-data.sh" "for img in elastic-agent elastic-agent-complete"
+
+it "calls /api/fleet/setup for local and remote"
+  assert_file_contains "$_SELF_DIR/../run-data.sh" '/api/fleet/setup'
+
+it "verifies synthetics agent health after enrollment"
+  assert_file_contains "$_SELF_DIR/../run-data.sh" "Verifying synthetics agent health"
+
 
 # ── Print results ─────────────────────────────────────────
 print_summary

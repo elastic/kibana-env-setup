@@ -244,7 +244,15 @@ waits for Kibana readiness via `/api/status`, and uses the `elastic` superuser
 
 **Synthetics private location:** Uses the Kibana `synthetics_private_location.js` script which
 starts Fleet Server, enrolls an agent, and creates the private location. Credentials are passed
-via `--kibana-password` so it works with both local and remote ES.
+via `--kibana-password` so it works with both local and remote ES. Before launching it,
+`run-data synthetics` checks the Docker daemon, warns about stale Fleet/Agent containers, calls
+`/api/fleet/setup` (local and remote) and waits for `fleet-server-policy`. It also refreshes both agent
+images (`elastic-agent` + `elastic-agent-complete`, at most every 12h; `RUN_DATA_SKIP_PULL=1` skips) and,
+after enrolling, verifies the synthetics agent is healthy — a stale cached snapshot image makes
+`synthetics/*` components crash ("seccomp policy is already registered") and monitors stay Pending.
+Mock data from `generate-monitors.js` can make monitors look Up even if the agent is broken. If the script fails with
+exit 125 (docker run failed) or 143 (Fleet Server timed out, usually missing `fleet-server-policy`),
+see `references/troubleshooting.md` → "Synthetics private location fails".
 
 For remote ES, it auto-reduces concurrency (payload 1000, concurrency 1,
 events-per-cycle 10) to avoid timeouts.

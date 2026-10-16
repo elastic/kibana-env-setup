@@ -125,3 +125,40 @@ run-data fleet-reset
 This deletes synthetics monitors, private locations, Fleet agents, agent policies,
 Fleet system index data, and `.fleet-*` ES indices — a full wipe.
 On restart, Fleet creates fresh signing keys and preconfiguration runs cleanly.
+
+## Synthetics private location fails: "Fleet Server exited with code 125 / 143"
+
+**Symptom:** `run-data synthetics` prints "SYNTHETICS PRIVATE LOCATION CREATED", then
+`Error: Fleet Server exited with code <N>` (from `enroll_agent.ts`). The private location
+and agent policy exist, but no agent enrolled.
+
+`run-data synthetics` now runs pre-flight checks (Docker daemon, stale containers,
+`/api/fleet/setup`, wait for `fleet-server-policy`) and prints these hints on failure.
+
+| Exit code | Meaning | Likely causes / fix |
+|---|---|---|
+| **125** | `docker run` itself failed — container never started | Docker not running / still starting (`docker info`); stale Fleet/Agent container holding the name or port 8220 (`docker ps -a`, then `run-data synthetics reset`); image pull failed (snapshot tag gone, expired `docker login docker.elastic.co`); Docker disk full (`docker system df`) |
+| **143** | SIGTERM — container started, then was killed. Usually Kibana's ~120s "Fleet Server ready" timeout (`execDuration=119`, `signal=15` in `docker events`); also happens if Docker restarts mid-run | **`fleet-server-policy` missing** (Fleet Server logs loop on "Waiting on policy with Fleet Server integration: fleet-server-policy") — happens after `reset`, which deletes it. Fix: `POST /api/fleet/setup` (the script now does this) or restart Kibana so preconfiguration runs. Other causes: ES/Kibana unreachable from inside the container (`localhost` ≠ host; needs `host.docker.internal`), x509/TLS errors to ES, agent snapshot image version ≠ Kibana/ES version |
+| **exit 0, but monitors stay Pending / Fleet shows agent Unhealthy / banner "Missing Fleet integration"** | Enrollment worked but the agent's components crashed. Fleet → Agents → agent → Components shows `synthetics/*` (and `http/metrics-monitoring`) **FAILED** with `panic: a seccomp policy is already registered` | **Stale/broken cached agent image.** The Kibana script runs `<kibana version>-SNAPSHOT` tags and `docker run` never re-pulls a cached tag. `run-data synthetics` now pulls both `elastic-agent` (Fleet Server) and `elastic-agent-complete` (synthetics agent) at most every 12h (skip with `RUN_DATA_SKIP_PULL=1`) and verifies agent health after enrolling. Manual fix: pull **both** images, `run-data synthetics reset`, restart Kibana, re-run. If a fresh pull is still broken, the snapshot itself is bad — see whether a newer build lands, or ask the Elastic Agent team. |
+| **hang** (no output) | `docker stop`/`rm` stuck in `reset` | Wedged container/daemon — restart Docker Desktop. `reset` now uses timeouts and `docker kill` fallback |
+
+**Seeing why Fleet Server is unhealthy:** the container is `--rm`'d on exit, so capture logs
+while it runs:
+```bash
+# terminal A (start before the script):
+until docker ps -q --filter ancestor=docker.elastic.co/elastic-agent/elastic-agent:<ver>-SNAPSHOT | grep -q .; do sleep 1; done; \
+docker logs -f $(docker ps -q --filter ancestor=docker.elastic.co/elastic-agent/elastic-agent:<ver>-SNAPSHOT) 2>&1 | tee /tmp/fleet-server.log
+# terminal B: run-data synthetics
+```
+Also useful: `docker events --filter event=kill --filter event=die --filter event=oom`.
+
+**Note:** re-running `run-data synthetics` without `reset` creates an additional private
+location each time. Delete extras in Synthetics → Settings → Private Locations, or `reset`.
+
+**Mock data can hide a broken agent:** `generate-monitors.js` writes fake summary docs straight
+into ES, so monitors can show Up/Succeeded with random 100–500 ms durations (even a browser
+monitor at ~290 ms) while the agent never ran anything. Real runs show realistic durations,
+`agent.id` on the ping doc, and an increasing "Monitors run" count on the private location.
+The post-enroll agent health check in `run-data synthetics` is the reliable signal.
+
+**zsh gotcha:** don't paste `<placeholder>` into zsh — `<` is redirection (parse error).

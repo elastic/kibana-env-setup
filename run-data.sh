@@ -150,6 +150,22 @@ except: pass
 " 2>/dev/null
     }
 
+    # Helper: run a command with a hard timeout (macOS has no `timeout` by default).
+    # A wedged container/daemon can make docker calls hang forever; this kills the client call.
+    _rd_timeout() {
+      setopt local_options no_monitor no_notify
+      local secs=$1; shift
+      "$@" &
+      local pid=$!
+      ( sleep "$secs"; kill -9 "$pid" 2>/dev/null ) &
+      local watcher=$!
+      wait "$pid" 2>/dev/null
+      local rc=$?
+      kill "$watcher" 2>/dev/null
+      wait "$watcher" 2>/dev/null
+      return $rc
+    }
+
     _synth_find_agent() {
       curl -s "$KIBANA_URL/api/fleet/agents?perPage=100" \
         -H "kbn-xsrf: true" -u "$AUTH" 2>/dev/null | python3 -c "
@@ -739,21 +755,6 @@ for item in data.get('items', []):
         echo "▶ Stopping Fleet Server and Elastic Agent containers..."
         local docker_count=0
         local cname   # declared once, outside the loop: zsh prints "cname=<value>" if `local` is re-run on a set var
-        # Helper: run a command with a hard timeout (macOS has no `timeout` by default).
-        # A wedged container/daemon can make docker stop/rm hang forever; this kills the client call.
-        _rd_timeout() {
-          setopt local_options no_monitor no_notify
-          local secs=$1; shift
-          "$@" &
-          local pid=$!
-          ( sleep "$secs"; kill -9 "$pid" 2>/dev/null ) &
-          local watcher=$!
-          wait "$pid" 2>/dev/null
-          local rc=$?
-          kill "$watcher" 2>/dev/null
-          wait "$watcher" 2>/dev/null
-          return $rc
-        }
         if ! _rd_timeout 10 docker info >/dev/null 2>&1; then
           echo "   ⚠ Docker daemon not responding (docker info timed out/failed)."
           echo "     Restart Docker Desktop, then re-run reset. Skipping container cleanup."
@@ -978,7 +979,54 @@ except: pass
           "${monitor_flags[@]}"
         ;;
       "")
-        # Pre-flight: verify ES is reachable (catches TLS/network errors early)
+        # ── Pre-flight checks (local AND remote) ─────────────────────────
+        # The Kibana script launches Fleet Server in Docker and waits ~120s for it to
+        # become healthy. Most failures come from the things checked below.
+
+        # 1. Docker daemon must answer (otherwise: exit code 125 from `docker run`)
+        if ! _rd_timeout 10 docker info >/dev/null 2>&1; then
+          echo "❌  Docker daemon not responding. Start/restart Docker Desktop, then re-run."
+          return 1
+        fi
+
+        # 2. Stale Fleet/Agent containers hold port 8220 / the container name (exit 125)
+        local stale
+        stale=$(_rd_timeout 15 docker ps -a --format '{{.ID}} {{.Names}} {{.Image}}' 2>/dev/null \
+                | grep -iE 'fleet.server|elastic.agent')
+        if [[ -n "$stale" ]]; then
+          echo "⚠  Found existing Fleet/Agent container(s) that may block port 8220:"
+          echo "$stale" | sed 's/^/     /'
+          echo "   If setup fails, run: run-data synthetics reset"
+          echo ""
+        fi
+
+        # 2b. Refresh the elastic-agent images. The Kibana script runs `<kibana version>-SNAPSHOT`
+        #     tags, and `docker run` uses the LOCAL cached copy forever — a stale snapshot caused
+        #     "seccomp policy is already registered" crashes (synthetics/* components FAILED,
+        #     monitors stuck Pending). Both images are needed: `elastic-agent` (Fleet Server)
+        #     and `elastic-agent-complete` (synthetics agent). Throttled to once per 12h;
+        #     set RUN_DATA_SKIP_PULL=1 to skip.
+        local agent_ver
+        agent_ver=$(curl -s --max-time 10 -u "$AUTH" "$KIBANA_URL/api/status" 2>/dev/null \
+          | python3 -c "import sys,json; print(json.load(sys.stdin)['version']['number'] + '-SNAPSHOT')" 2>/dev/null)
+        if [[ -n "$agent_ver" && "${RUN_DATA_SKIP_PULL:-0}" != "1" ]]; then
+          local pull_stamp="${TMPDIR:-/tmp}/run-data-agent-pull-${agent_ver}.stamp" img pulled=false
+          if [[ -z "$(find "$pull_stamp" -mmin -720 2>/dev/null)" ]]; then
+            for img in elastic-agent elastic-agent-complete; do
+              echo "Pulling docker.elastic.co/elastic-agent/${img}:${agent_ver} …"
+              if _rd_timeout 600 docker pull -q "docker.elastic.co/elastic-agent/${img}:${agent_ver}" >/dev/null 2>&1; then
+                pulled=true
+              else
+                echo "⚠  Could not pull ${img}:${agent_ver} (offline, expired 'docker login docker.elastic.co', or tag gone)."
+                echo "   Continuing with the locally cached image, which may be stale."
+              fi
+            done
+            [[ "$pulled" == true ]] && touch "$pull_stamp"
+            echo ""
+          fi
+        fi
+
+        # 3. Remote only: verify ES is reachable (catches TLS/network errors early)
         if [[ "$IS_REMOTE" == true ]]; then
           local es_check
           es_check=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
@@ -990,21 +1038,40 @@ except: pass
             echo "   Fleet Server agent enrollment will likely fail."
             echo ""
           fi
-
-          # Ensure Fleet is set up (creates fleet-server-policy if missing).
-          # Required after reset or on fresh clusters — idempotent, safe to call always.
-          echo "Ensuring Fleet is initialised…"
-          local fleet_resp
-          fleet_resp=$(curl -s -X POST "${KIBANA_URL}/api/fleet/setup" \
-            -H "kbn-xsrf: true" -H "content-type: application/json" \
-            -u "${DATA_USERNAME}:${DATA_PASSWORD}" --max-time 30 2>&1)
-          if echo "$fleet_resp" | grep -q '"isInitialized":true'; then
-            echo "✓ Fleet is ready"
-          else
-            echo "⚠  Fleet setup response: $fleet_resp"
-          fi
-          echo ""
         fi
+
+        # 4. Ensure Fleet is set up (creates fleet-server-policy if missing).
+        #    Required after `reset` or on fresh clusters — idempotent, safe to call always.
+        #    Without it Fleet Server loops on "Waiting on policy with Fleet Server
+        #    integration: fleet-server-policy" until the ~120s timeout kills it (exit 143).
+        echo "Ensuring Fleet is initialised…"
+        local fleet_resp
+        fleet_resp=$(curl -s -X POST "${KIBANA_URL}/api/fleet/setup" \
+          -H "kbn-xsrf: true" -H "content-type: application/json" \
+          -u "${DATA_USERNAME}:${DATA_PASSWORD}" --max-time 30 2>&1)
+        if echo "$fleet_resp" | grep -q '"isInitialized":true'; then
+          echo "✓ Fleet is ready"
+        else
+          echo "⚠  Fleet setup response: $fleet_resp"
+        fi
+
+        # 5. Wait (up to 60s) for fleet-server-policy to exist before launching Fleet Server
+        local fsp_code="" fsp_try
+        for fsp_try in {1..30}; do
+          fsp_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
+            "${KIBANA_URL}/api/fleet/agent_policies/fleet-server-policy" \
+            -H "kbn-xsrf: true" -u "${DATA_USERNAME}:${DATA_PASSWORD}" 2>/dev/null)
+          [[ "$fsp_code" == "200" ]] && break
+          sleep 2
+        done
+        if [[ "$fsp_code" == "200" ]]; then
+          echo "✓ fleet-server-policy exists"
+        else
+          echo "⚠  fleet-server-policy not found (HTTP ${fsp_code:-none}). Fleet Server will likely time out."
+          echo "   Try restarting Kibana so Fleet preconfiguration runs, then re-run."
+        fi
+        echo ""
+
         node x-pack/scripts/synthetics_private_location.js \
           --elasticsearch-host "${ES_HOST}" \
           --kibana-url "$KIBANA_URL" \
@@ -1014,6 +1081,46 @@ except: pass
         if [[ $exit_code -ne 0 ]]; then
           echo ""
           echo "❌  synthetics_private_location.js failed (exit code $exit_code)"
+          echo "   Common causes:"
+          echo "     125  docker run failed: Docker down, stale container/port 8220, image pull failed"
+          echo "     143  Fleet Server timed out (~120s): fleet-server-policy missing (restart Kibana),"
+          echo "          ES/Kibana unreachable from the container, or snapshot image/version mismatch"
+          echo "     Debug: docker events (look for kill signal=15), or stream logs while it runs:"
+          echo "       docker logs -f \$(docker ps -q --filter ancestor=<elastic-agent image>)"
+          echo "   See kibana-dev-env/references/troubleshooting.md → \"Synthetics private location fails\""
+        else
+          # 6. Verify the synthetics agent is actually healthy. Enrollment can succeed while the
+          #    agent's synthetics/* components crash (stale image) — monitors then sit Pending,
+          #    and mock data from generate-monitors.js would hide that by faking Up results.
+          echo ""
+          echo "Verifying synthetics agent health (up to 90s)…"
+          local agent_status="" ag_try
+          for ag_try in {1..30}; do
+            agent_status=$(curl -s --max-time 5 "$KIBANA_URL/api/fleet/agents?perPage=100" \
+              -H "kbn-xsrf: true" -u "$AUTH" 2>/dev/null | python3 -c "
+import sys, json
+try:
+    items = json.load(sys.stdin).get('items', [])
+    s = [a.get('status') for a in items if a.get('policy_id') != 'fleet-server-policy']
+    print(s[0] if s else 'none')
+except Exception:
+    print('none')
+" 2>/dev/null)
+            [[ "$agent_status" == "online" ]] && break
+            sleep 3
+          done
+          case "$agent_status" in
+            online)
+              echo "✓ Synthetics agent is healthy — monitors will run." ;;
+            none)
+              echo "⚠  No synthetics agent enrolled. Check Fleet → Agents." ;;
+            *)
+              echo "⚠  Synthetics agent status: ${agent_status} (not healthy)."
+              echo "   Open Fleet → Agents → the agent → Components. If synthetics/* are FAILED with"
+              echo "   'seccomp policy is already registered', the cached agent image is stale/broken:"
+              echo "     docker pull docker.elastic.co/elastic-agent/elastic-agent-complete:<ver>-SNAPSHOT"
+              echo "   then 'run-data synthetics reset', restart Kibana and re-run." ;;
+          esac
         fi
         return $exit_code
         ;;
