@@ -7,6 +7,7 @@
 #    run-data synthetics                     → create synthetics private location
 #    run-data synthetics monitors            → create ~40 monitors + mock data (idempotent, uses existing locations)
 #    run-data synthetics monitors --minimal → create 4 monitors (1 per type) + mock data
+#    run-data synthetics monitors --allow-unenrolled → also use private locations with no enrolled agent (no Docker needed)
 #    run-data synthetics break <scenario>    → trigger a Synthetics failure scenario
 #    run-data synthetics fix <scenario>      → restore from a failure scenario
 #    run-data synthetics fix public-locations → migrate monitors off broken public locations
@@ -737,15 +738,41 @@ for item in data.get('items', []):
         #    their API keys and wipe the Fleet state they depend on.
         echo "▶ Stopping Fleet Server and Elastic Agent containers..."
         local docker_count=0
-        for cid in $(docker ps -a --format '{{.ID}} {{.Names}} {{.Image}}' 2>/dev/null \
+        local cname   # declared once, outside the loop: zsh prints "cname=<value>" if `local` is re-run on a set var
+        # Helper: run a command with a hard timeout (macOS has no `timeout` by default).
+        # A wedged container/daemon can make docker stop/rm hang forever; this kills the client call.
+        _rd_timeout() {
+          setopt local_options no_monitor no_notify
+          local secs=$1; shift
+          "$@" &
+          local pid=$!
+          ( sleep "$secs"; kill -9 "$pid" 2>/dev/null ) &
+          local watcher=$!
+          wait "$pid" 2>/dev/null
+          local rc=$?
+          kill "$watcher" 2>/dev/null
+          wait "$watcher" 2>/dev/null
+          return $rc
+        }
+        if ! _rd_timeout 10 docker info >/dev/null 2>&1; then
+          echo "   ⚠ Docker daemon not responding (docker info timed out/failed)."
+          echo "     Restart Docker Desktop, then re-run reset. Skipping container cleanup."
+        else
+        for cid in $(_rd_timeout 15 docker ps -a --format '{{.ID}} {{.Names}} {{.Image}}' 2>/dev/null \
                      | grep -iE 'fleet.server|elastic.agent' | awk '{print $1}'); do
-          local cname
-          cname=$(docker inspect --format '{{.Name}}' "$cid" 2>/dev/null | tr -d '/')
-          docker stop "$cid" >/dev/null 2>&1
-          docker rm -f "$cid" >/dev/null 2>&1
-          echo "   Stopped & removed: $cname ($cid)"
+          cname=$(_rd_timeout 10 docker inspect --format '{{.Name}}' "$cid" 2>/dev/null | tr -d '/')
+          if ! _rd_timeout 20 docker stop -t 5 "$cid" >/dev/null 2>&1; then
+            echo "   ⚠ docker stop timed out for $cname ($cid) — forcing kill"
+            _rd_timeout 10 docker kill "$cid" >/dev/null 2>&1
+          fi
+          if _rd_timeout 20 docker rm -f "$cid" >/dev/null 2>&1; then
+            echo "   Stopped & removed: $cname ($cid)"
+          else
+            echo "   ⚠ Could not remove $cname ($cid) — restart Docker Desktop and re-run reset"
+          fi
           docker_count=$((docker_count + 1))
         done
+        fi
         if [[ $docker_count -eq 0 ]]; then
           echo "   No Fleet/Agent containers running"
         fi
@@ -935,7 +962,12 @@ except: pass
         # $0:A resolves symlinks (zsh-native realpath), :h takes dirname
         local SCRIPT_DIR="${0:A:h}"
         local monitor_flags=()
-        [[ "$3" == "--minimal" ]] && monitor_flags+=(--minimal)
+        local mflag
+        for mflag in "${@:3}"; do
+          case "$mflag" in
+            --minimal|--allow-unenrolled) monitor_flags+=("$mflag") ;;
+          esac
+        done
         node "$SCRIPT_DIR/generate-monitors.js" \
           --kibana-url "$KIBANA_URL" \
           --kibana-username "${DATA_USERNAME}" \
