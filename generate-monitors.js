@@ -18,20 +18,60 @@
 //      --elasticsearch-username elastic \
 //      --elasticsearch-password changeme \
 //      [--minimal]          # 4 monitors (1 per type) instead of ~40
+//      [--remote-only]      # CCS testing: do NOT touch Kibana; only write mock result
+//                           # docs to --elasticsearch-host (point it at the REMOTE ES).
+//                           # A Kibana whose CCS settings include that cluster shows
+//                           # them as remote-only monitors (no local config exists).
+//      [--remote-kibana-url URL]   # optional; stored as `kibanaUrl` on each doc for
+//                                  # remote monitor deep links
+//      [--location-label L] # --remote-only: location shown on remote cards (default "Remote Location")
+//      [--name-prefix P]    # --remote-only: prefix monitor names, e.g. "[EU] " to tell
+//                           # remote monitors apart from local ones with the same name
+//      [--down TEXT]        # force monitors whose name contains TEXT to be down (red card, error points).
+//                           # Keep the flag on every re-run, or the next run makes them up again.
+//      [--no-tags]          # don't write `tags` on the docs (cards with tags squeeze the type/Remote
+//                           # badges onto two lines; without tags they stay on one row)
+//      [--history-days N]   # also backfill older checks (1 per 30 min, up to N days back) so duration
+//                           # trends and sparklines are populated (re-running adds duplicates; run once)
+//      [--limit N]         # --remote-only: only the first N generated monitors (to tune how many cards you get)
+//      [--allow-unenrolled] # also use private locations that have no enrolled agent
+//                           # (monitors are created, results are mock data only)
 // ============================================================
 
 const http = require('http');
 const https = require('https');
+const crypto = require('crypto');
 const { URL } = require('url');
+
+// Deterministic UUID-shaped id from a monitor name (so --remote-only re-runs reuse ids)
+function stableConfigId(name) {
+  const h = crypto.createHash('sha1').update(`remote-only:${name}`).digest('hex');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
+}
 
 // ── CLI arg parsing ─────────────────────────────────────────
 function parseArgs() {
   const args = process.argv.slice(2);
   const opts = {};
   let minimal = false;
+  let remoteOnly = false;
+  let allowUnenrolled = false;
+  let noTags = false;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--minimal') {
       minimal = true;
+      continue;
+    }
+    if (args[i] === '--remote-only') {
+      remoteOnly = true;
+      continue;
+    }
+    if (args[i] === '--allow-unenrolled') {
+      allowUnenrolled = true;
+      continue;
+    }
+    if (args[i] === '--no-tags') {
+      noTags = true;
       continue;
     }
     const key = args[i].replace(/^--/, '').replace(/-/g, '_');
@@ -46,6 +86,15 @@ function parseArgs() {
     esUsername: opts.elasticsearch_username || opts.kibana_username || 'elastic',
     esPassword: opts.elasticsearch_password || opts.kibana_password || 'changeme',
     minimal,
+    remoteOnly,
+    allowUnenrolled,
+    remoteKibanaUrl: opts.remote_kibana_url || '',
+    locationLabel: opts.location_label || 'Remote Location',
+    namePrefix: opts.name_prefix || '',
+    limit: Number(opts.limit) > 0 ? Number(opts.limit) : 0,
+    down: opts.down || '',
+    noTags,
+    historyDays: Number(opts.history_days) > 0 ? Number(opts.history_days) : 0,
   };
 }
 
@@ -124,13 +173,17 @@ async function discoverLocations() {
     );
     const agentCount = agentsResp.body?.total || 0;
 
-    if (agentCount > 0) {
+    if (agentCount > 0 || config.allowUnenrolled) {
       locations.push({
         id: loc.id,
         label: loc.label,
         isServiceManaged: false,
       });
-      logOk(`Private: "${loc.label}" (${agentCount} agent(s))`);
+      logOk(
+        agentCount > 0
+          ? `Private: "${loc.label}" (${agentCount} agent(s))`
+          : `Private: "${loc.label}" (no agents — allowed by --allow-unenrolled)`
+      );
     } else {
       logWarn(`Private: "${loc.label}" — skipped (no enrolled agents)`);
     }
@@ -557,12 +610,15 @@ async function createMonitors(locations) {
 // ============================================================
 //  MOCK SUMMARY DATA
 // ============================================================
-async function ingestMockData() {
+async function ingestMockData(monitorsOverride) {
   logSection('Ingesting mock summary data...');
 
-  // Fetch all monitors to get their IDs and config
-  const monitorsResp = await kibanaApi('/api/synthetics/monitors?perPage=200');
-  const monitors = monitorsResp.body?.monitors || [];
+  // Monitors come from Kibana, unless --remote-only supplies generated ones
+  let monitors = monitorsOverride;
+  if (!monitors) {
+    const monitorsResp = await kibanaApi('/api/synthetics/monitors?perPage=200');
+    monitors = monitorsResp.body?.monitors || [];
+  }
 
   if (monitors.length === 0) {
     logErr('No monitors found — skipping mock data ingestion.');
@@ -583,12 +639,19 @@ async function ingestMockData() {
 
   for (let i = 0; i < monitors.length; i++) {
     const m = monitors[i];
-    const monitorStatus = pickStatus(i);
+    // --down <text>: force monitors whose name contains <text> to be down (latest check
+    // fails, older ones pass) — handy for screenshots with a red card + error points.
+    const forcedDown =
+      config.down && String(m.name).toLowerCase().includes(config.down.toLowerCase());
+    const monitorStatus = forcedDown ? 'down' : pickStatus(i);
 
     // Skip pending — they just have no data
     if (monitorStatus === 'pending') continue;
 
     const configId = m.config_id || m.id;
+    const scheduleSeconds = m.schedule
+      ? Number(m.schedule.number) * (m.schedule.unit === 'm' ? 60 : 1)
+      : 0;
     const monitorName = m.name;
     const monitorType = m.type;
     const monitorLocations = m.locations || [];
@@ -596,9 +659,24 @@ async function ingestMockData() {
     for (const location of monitorLocations) {
       // Generate summary docs for the last 30 minutes (a few check cycles)
       const checkCount = monitorStatus === 'up' ? 5 : 3;
-      for (let c = 0; c < checkCount; c++) {
-        const ts = new Date(now - c * 3 * 60 * 1000).toISOString();
-        const isUp = monitorStatus === 'up' || (monitorStatus === 'down' && c > 0);
+      // Recent checks: one every 3 minutes. --history-days N adds older checks, one every
+      // 30 minutes back to N days ago, so duration trends / sparklines look populated.
+      const offsets = [];
+      for (let c = 0; c < checkCount; c++) offsets.push({ c, ms: c * 3 * 60 * 1000, hist: false });
+      if (config.historyDays > 0) {
+        const stepMs = 30 * 60 * 1000;
+        let h = 0;
+        for (let ms = checkCount * 3 * 60 * 1000 + stepMs; ms <= config.historyDays * 86400000; ms += stepMs) {
+          h++;
+          offsets.push({ c: checkCount + h, ms, hist: true, h });
+        }
+      }
+      for (const { c, ms: offsetMs, hist, h } of offsets) {
+        const ts = new Date(now - offsetMs).toISOString();
+        // History is up, except every 4th check of a forced-down monitor (trend with some failures)
+        const isUp = hist
+          ? !(forcedDown && h % 4 === 0)
+          : monitorStatus === 'up' || (monitorStatus === 'down' && c > 0);
         const durationUs = isUp
           ? Math.floor(100000 + Math.random() * 400000)   // 100-500ms
           : Math.floor(5000000 + Math.random() * 5000000); // 5-10s (timeout)
@@ -613,11 +691,15 @@ async function ingestMockData() {
             name: monitorName,
             type: monitorType,
             status: isUp ? 'up' : 'down',
+            // Remote-only monitors have no saved object, so Synthetics derives their
+            // schedule from `monitor.interval` (seconds) on the ping. Without it the
+            // schedule is empty and the overview duration trend shows "--".
+            ...(scheduleSeconds > 0 ? { interval: scheduleSeconds } : {}),
             duration: { us: durationUs },
             check_group: `${configId}-${location.id || location.label}-${c}-${Date.now()}`,
             timespan: {
               gte: ts,
-              lt: new Date(now - (c - 1) * 3 * 60 * 1000).toISOString(),
+              lt: new Date(now - offsetMs + (hist ? 30 : 3) * 60 * 1000).toISOString(),
             },
           },
           summary: {
@@ -632,9 +714,11 @@ async function ingestMockData() {
             },
           },
           config_id: configId,
+          ...(!config.noTags && Array.isArray(m.tags) && m.tags.length ? { tags: m.tags } : {}),
           meta: {
             space_id: 'default',
           },
+          ...(config.remoteKibanaUrl ? { kibanaUrl: config.remoteKibanaUrl } : {}),
         };
 
         // Add URL info if available
@@ -644,6 +728,20 @@ async function ingestMockData() {
             domain: monitorUrl.replace(/https?:\/\//, '').split('/')[0].split(':')[0],
           };
         }
+
+        // Heartbeat writes a `state` object on every summary doc. The monitor detail
+        // "Error states" tile counts distinct state.id on failed checks; without this
+        // it renders "(blank)". One state per up/down streak per monitor+location.
+        const stateKey = `${configId}-${location.id || location.label}-${isUp ? 'up' : 'down'}`;
+        doc.state = {
+          id: crypto.createHash('sha1').update(stateKey).digest('hex').slice(0, 20),
+          up: isUp ? 1 : 0,
+          down: isUp ? 0 : 1,
+          checks: 1,
+          status: isUp ? 'up' : 'down',
+          started_at: ts,
+          duration_ms: '0',
+        };
 
         // Add error info for down monitors
         if (!isUp) {
@@ -744,7 +842,28 @@ async function main() {
   console.log(`   Kibana: ${config.kibanaUrl}`);
   console.log(`   ES:     ${config.esHost}`);
   console.log(`   Mode:   ${config.minimal ? 'minimal (4 monitors)' : 'full (~38 monitors)'}`);
+  if (config.remoteOnly) console.log('   Remote-only: results go to ES only, Kibana is not touched');
   console.log('');
+
+  // --remote-only: no Kibana calls, no location discovery. Generate monitors with a
+  // fake location and stable config_ids, then write their result docs to the ES host.
+  if (config.remoteOnly) {
+    const fakeLocations = [
+      { id: config.locationLabel, label: config.locationLabel, isServiceManaged: false },
+    ];
+    let monitors = buildMonitorDefinitions(fakeLocations).map((m) => {
+      const name = `${config.namePrefix}${m.name}`;
+      return { ...m, name, config_id: stableConfigId(name) };
+    });
+    if (config.limit > 0) monitors = monitors.slice(0, config.limit);
+    await ingestMockData(monitors);
+    console.log(
+      `\n✅  Done! Results for remote-only monitors written to ${config.esHost}.` +
+        `\n   (${monitors.length} generated; ones the mock distribution marks "pending" have no data, so they won't show up remotely.)` +
+        '\n   In the Kibana that has this cluster as a remote, enable it in Synthetics → Settings.'
+    );
+    return;
+  }
 
   // 1. Discover available locations (public + private with agents)
   const locations = await discoverLocations();

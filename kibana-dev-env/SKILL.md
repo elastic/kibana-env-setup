@@ -281,6 +281,20 @@ Available scenarios:
 Prerequisites: a working Synthetics setup with at least 1 private location,
 1 enrolled agent, and 1-2 monitors. Run `run-data synthetics` first to provision.
 
+### Remote-only monitors for CCS testing
+
+`node generate-monitors.js --remote-only [--minimal] --elasticsearch-host <remote-es>`
+does not call Kibana: it writes mock result docs (with stable `config_id`s, fake
+location "Remote Location", optional `--remote-kibana-url` → `kibanaUrl`) to the given
+ES only. A Kibana that has that ES configured as a remote cluster lists them as
+remote-only monitors. Use it with a local CCS setup (second ES on 9500/9600) when
+Kibana and the remote cluster must be on the same version.
+
+Extra flags: `--location-label`, `--name-prefix`, `--limit N`, `--no-tags`,
+`--down TEXT` (repeat on every re-run), and `--history-days N` (one-time backfill of
+older checks, 1 per 30 min, so trends/sparklines look populated; don't put it in a
+refresh loop). Docs include a `state` object so the "Error states" tile has a value.
+
 ### Heartbeat / k8s autodiscovery monitors
 
 `run-data synthetics heartbeat` provisions **Elastic Agent–run synthetics monitors
