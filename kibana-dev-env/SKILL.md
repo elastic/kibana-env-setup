@@ -341,8 +341,12 @@ is deployed (`node ./scripts/otel_demo.js --config config/kibana.dev.yml`).
 Key facts the command handles automatically:
 - Derives the Agent image from the repo's `package.json` (`<version>-SNAPSHOT`).
 - Reads the ES host from `config/kibana.dev.yml` and points the Agent's output
-  there (designed for **remote ES** / oblt-cli — Agent and Kibana must share one
-  cluster; it warns on local ES since the in-cluster Agent can't reach it).
+  there (Agent and Kibana must share one cluster). For **local ES** it rewrites
+  `localhost`/`127.0.0.1` to `host.minikube.internal` in the manifest only, since
+  the in-cluster Agent can't reach the host's loopback; ES must also bind beyond
+  loopback — set `ES_BIND_ALL="true"` in `~/.kibana-dev.conf` (kbn-start.sh then
+  starts ES with `-E network.host=0.0.0.0`), then restart ES. Otherwise the Agent
+  logs `connection refused`.
 - Creates a scoped ES API key (`auto_configure`/`create_doc` on `synthetics-*`).
 - These pings deliberately carry no `observer.geo.name` (location-less) and no
   `meta.space_id` (space-less), which is exactly what the read-only surfacing and
@@ -417,6 +421,7 @@ FEAT_KIBANA_PORT="5601"
 FEAT_ES_PORT="9200"
 OBLT_CLUSTER_NAME="my-cluster"   # optional, for renew auto-detect
 KBN_EXTRA_ARGS="--mockIdpPlugin.enabled=false"  # optional, extra flags for yarn start (do NOT add --no-watch here — use restart --no-watch for QA)
+ES_BIND_ALL="true"   # optional, local ES only: start ES with network.host=0.0.0.0 so the minikube Agent (heartbeat monitors) can reach it; exposes ES on the network
 ```
 
 ### `--no-watch` (file watcher)

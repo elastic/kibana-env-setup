@@ -325,6 +325,8 @@ DATA_USERNAME=admin DATA_PASSWORD='<admin-pw>' run-data.sh synthetics heartbeat 
 ```
 > `up` reuses `DATA_USERNAME`/`DATA_PASSWORD` for the otel-demo deploy too (it exports them as `KIBANA_*`/`ELASTICSEARCH_*`), so one credential set drives everything. Override the post-annotate wait with `HB_WAIT=<seconds>` (default 75).
 
+> **Local ES:** the in-cluster Agent can't reach `localhost` (that's the pod itself), so for a local ES host the script rewrites `localhost`/`127.0.0.1` to `host.minikube.internal` in the Agent manifest only. ES must also listen beyond loopback — add `ES_BIND_ALL=true` to `~/.kibana-dev.conf` once (`kbn-start.sh` then starts local ES with `-E network.host=0.0.0.0`; ignored with remote ES) and restart ES. This exposes dev ES (default creds) on your network. Otherwise the Agent logs `dial tcp …:9200: connection refused` and no pings land (check with `run-data.sh synthetics heartbeat status`).
+
 Autodiscovery needs *live* k8s Services to watch (which oblt-cli's indexed oteldemo data can't provide), which is why `up` deploys the demo into minikube.
 
 **Individual steps** (if you'd rather drive it manually, or minikube + otel demo are already up):

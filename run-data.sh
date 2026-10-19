@@ -1425,9 +1425,16 @@ YAML
             echo "    node ./scripts/otel_demo.js --config config/kibana.dev.yml"
             echo "   Continuing; you can annotate Services in another namespace manually."
           fi
+          # Inside minikube, localhost/127.0.0.1 is the Agent pod itself, not the Mac.
+          # For local ES, hand the Agent host.minikube.internal instead (manifest only;
+          # the script's own curl calls keep using $ES_HOST).
+          local AGENT_ES_HOST="$ES_HOST"
           if [[ "$IS_REMOTE" != true ]]; then
-            echo "⚠  ES host is local ($ES_HOST). The in-cluster Agent likely can't reach it;"
-            echo "   this flow targets remote ES (oblt-cli). Pings may not land."
+            AGENT_ES_HOST="${ES_HOST//localhost/host.minikube.internal}"
+            AGENT_ES_HOST="${AGENT_ES_HOST//127.0.0.1/host.minikube.internal}"
+            echo "⚠  ES host is local ($ES_HOST). Agent will use $AGENT_ES_HOST instead."
+            echo "   ES must listen beyond loopback: set ES_BIND_ALL=true in ~/.kibana-dev.conf and"
+            echo "   restart ES, otherwise the in-cluster Agent gets 'connection refused'."
           fi
 
           echo "▶ Installing synthetics integration package…"
@@ -1460,8 +1467,8 @@ YAML
 
           echo "▶ Generating manifest → $HB_MANIFEST"
           echo "   image: $HB_IMAGE"
-          echo "   es:    $ES_HOST"
-          _hb_write_manifest "$ES_HOST" "$key_pair" "$HB_IMAGE" "$HB_AGENT_NS" > "$HB_MANIFEST"
+          echo "   es:    $AGENT_ES_HOST"
+          _hb_write_manifest "$AGENT_ES_HOST" "$key_pair" "$HB_IMAGE" "$HB_AGENT_NS" > "$HB_MANIFEST"
 
           echo "▶ Applying manifest…"
           kubectl apply -f "$HB_MANIFEST"

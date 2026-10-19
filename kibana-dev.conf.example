@@ -50,3 +50,9 @@
 # ── Kibana extra flags ───────────────────────────────────
 # Extra args appended to every `yarn start` invocation
 # KBN_EXTRA_ARGS="--mockIdpPlugin.enabled=false"
+
+# ── Local ES reachable from minikube ─────────────────────
+# Start local ES with network.host=0.0.0.0 so the in-cluster Agent used by
+# `run-data synthetics heartbeat` can reach it (via host.minikube.internal).
+# WARNING: exposes dev ES (default creds) on your network. Ignored with remote ES.
+# ES_BIND_ALL=true

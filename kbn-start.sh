@@ -15,6 +15,11 @@
 #    KBN_EXTRA_ARGS  — extra flags appended to `yarn start` / `pnpm start`
 #                      (package manager is auto-detected per worktree)
 #                      (set in ~/.kibana-dev.conf to persist across launches)
+#    ES_BIND_ALL     — "true" starts LOCAL ES with -E network.host=0.0.0.0 so the
+#                      in-cluster minikube Agent can reach it via
+#                      host.minikube.internal (heartbeat monitors on local ES).
+#                      Exposes ES on your network — dev ES uses default creds.
+#                      Ignored when remote ES is configured. Default: false.
 #
 #  EXAMPLES:
 #    kbn-start.sh main-cluster --kibana-port 5602 --es-port 9201 --host kibana-main.local
@@ -38,6 +43,7 @@ ES_PORT=9200
 KIBANA_HOST="localhost"
 ES_FLAGS=""
 KBN_EXTRA_ARGS="${KBN_EXTRA_ARGS:-}"
+ES_BIND_ALL="${ES_BIND_ALL:-false}"
 # ── END DEFAULTS ──────────────────────────────────────────
 
 # ── ARGUMENT PARSING ──────────────────────────────────────
@@ -165,6 +171,12 @@ if [[ "$USE_REMOTE_ES" == true ]]; then
   echo "    (ES host is configured in ${KIBANA_DEV_YML})"
 else
   echo "▶ Starting local ES... (Kibana will auto-start once ES is ready)"
+  # Opt-in (ES_BIND_ALL=true): bind ES beyond loopback so the minikube Agent can reach it.
+  # An explicit -E network.host=... from the command line wins.
+  if [[ "$ES_BIND_ALL" == true && "$ES_FLAGS" != *"network.host="* ]]; then
+    ES_FLAGS="$ES_FLAGS -E network.host=0.0.0.0"
+    echo "⚠  ES_BIND_ALL=true — ES bound to 0.0.0.0 (reachable from your network)."
+  fi
   (
     tail -n 0 -F "$LOGFILE" | while read -r line; do
       if [[ "$line" == *"$TRIGGER_STRING"* ]]; then

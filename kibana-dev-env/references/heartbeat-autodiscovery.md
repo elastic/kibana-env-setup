@@ -54,6 +54,11 @@ otel demo Services            standalone Elastic Agent          Elasticsearch   
   Heartbeat will produce data that never shows up — a dead end.
 - Agent and Kibana must share **one** ES cluster. With the dev-env on remote ES
   (oblt-cli), the Agent output uses the cloud URL from `config/kibana.dev.yml`.
+  With **local ES**, `deploy` rewrites `localhost`/`127.0.0.1` to
+  `host.minikube.internal` in the manifest (the pod's own localhost is not the
+  host). ES must bind beyond loopback — set `ES_BIND_ALL=true` in `~/.kibana-dev.conf` and
+  restart ES (kbn-start.sh adds `-E network.host=0.0.0.0`); symptom otherwise
+  is `dial tcp …:9200: connection refused` + `Drop batch` in `heartbeat status`.
 - The **synthetics integration package** must be installed first so `synthetics-*`
   data streams and mappings exist, otherwise pings land unmapped.
 - Set `monitor.id` via `fields_under_root: true` + `fields: { monitor.id: ... }`.
