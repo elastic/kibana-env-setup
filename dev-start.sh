@@ -717,6 +717,9 @@ cmd_list() {
     printf "  %-30s →  ${YELLOW}not configured — run: ./dev-start.sh switch <branch>${NC}\n" "kibana-feat"
   fi
 
+  # Declare before the loop — zsh prints values if `local` is re-run on an
+  # already-declared variable (second iteration onwards).
+  local es_display
   for yml in "$WORKTREE_BASE"/*/config/kibana.dev.yml; do
     [[ -f "$yml" ]] || continue
     wt_name=$(echo "$yml" | sed "s|$WORKTREE_BASE/||" | sed 's|/config/kibana.dev.yml||')
@@ -726,7 +729,6 @@ cmd_list() {
     session_name=$(echo "kibana-$wt_name" | tr '.' '-')
     tmux has-session -t "$session_name" 2>/dev/null || continue
     k_port=$(grep -E "^ *port:" "$yml" 2>/dev/null | head -1 | awk '{print $2}')
-    local es_display
     es_display=$(get_es_display "$yml")
     printf "  %-30s →  Kibana :%-6s  ES %s\n" \
       "kibana-$wt_name" "$k_port" "$es_display"
@@ -2221,7 +2223,7 @@ cmd_renew() {
       done
       echo ""
       echo "  Run ${GREEN}./dev-start.sh restart <session>${NC} to pick up the new credentials."
-    elif [[ -n "$session_filter" ]]; then
+    elif [[ -n "$session_filter" && ${#skipped[@]} -eq 0 && ${#up_to_date[@]} -eq 0 ]]; then
       echo ""
       echo "${YELLOW}⚠${NC}  No remote session matched '${session_filter}'."
       echo "  Is it currently using remote ES?  Check with: ${GREEN}./dev-start.sh list${NC}"
