@@ -159,7 +159,7 @@ When in doubt, ask: "Do you want a new session alongside kibana-feat, or replace
 |---------|-------------|
 | `restart <main\|feat\|branch>` | Restart ES + Kibana (handles graceful shutdown, auto-rebuilds session if panes are missing) |
 | `renew [--cluster-name <n>] [--session <t>] [--save]` | Refresh remote ES credentials; `--session` limits to one session (main\|feat\|branch) |
-| `sync [target] [--remote\|--local]` | Regenerate kibana.dev.yml from template (target: main\|feat\|branch\|all) |
+| `sync [target] [--remote\|--local]` | Regenerate kibana.dev.yml from template (target: main\|feat\|branch\|all). For a branch worktree with no kibana.dev.yml, generates one with fresh ports |
 | `clean [main\|feat\|name\|all]` | List or delete ES data folders |
 
 ### Info

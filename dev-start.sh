@@ -15,7 +15,7 @@
 #    Operations:
 #      restart <main|feat|branch> [--no-watch]  restart ES + Kibana (--no-watch skips file watcher; use for QA/screenshot restarts when FSEvents fails)
 #      renew [--cluster-name <n>] [--session <t>] [--save]  refresh remote ES credentials
-#      sync [main|feat|branch|all] [--remote|--local]  regenerate kibana.dev.yml from template
+#      sync [main|feat|branch|all] [--remote|--local]  regenerate kibana.dev.yml from template (creates it for a branch worktree that has none)
 #      clean [main|feat|name|all]             list or delete ES data folders
 #    Info:
 #      list                                   sessions, worktrees & port assignments
@@ -994,8 +994,17 @@ cmd_sync() {
         wt_port=$(grep -E "^ *port:" "$wt_dir/config/kibana.dev.yml" 2>/dev/null | head -1 | awk '{print $2}')
         wt_es_port=$(grep -E "^ *- \"?http://localhost:" "$wt_dir/config/kibana.dev.yml" 2>/dev/null | head -1 | sed 's|.*http://localhost:||' | tr -d ' "')
         sync_one "kibana-$short_name" "$wt_dir" "${wt_port}" "${wt_es_port}"
+      elif [[ -d "$wt_dir" ]]; then
+        # Worktree exists but has no kibana.dev.yml (e.g. created outside `new`) —
+        # assign fresh free ports and generate it so it shows up in list/status.
+        local new_ports new_k new_es
+        echo "${BLUE}→${NC} No kibana.dev.yml for $short_name — generating with fresh ports..."
+        new_ports=$(find_free_ports)
+        new_k=$(echo "$new_ports" | awk '{print $1}')
+        new_es=$(echo "$new_ports" | awk '{print $2}')
+        sync_one "kibana-$short_name" "$wt_dir" "$new_k" "$new_es"
       else
-        echo "${RED}Error:${NC} No kibana.dev.yml found at $wt_dir/config/"
+        echo "${RED}Error:${NC} No worktree found at $wt_dir"
         return 1
       fi
       ;;

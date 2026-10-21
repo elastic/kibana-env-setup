@@ -130,6 +130,7 @@ That's it for your morning start. It creates any missing sessions and attaches t
 ~/dev-start.sh sync feat                  # regenerate for a specific session
 ~/dev-start.sh sync main --remote         # switch kibana-main to remote ES
 ~/dev-start.sh sync main --local          # switch kibana-main back to local ES
+~/dev-start.sh sync <branch>              # worktree with no kibana.dev.yml: generates one with fresh ports (then: restart <session>)
 ~/dev-start.sh status                     # health check — ping ES + Kibana for all sessions
 ~/dev-start.sh restart main               # restart ES + Kibana in kibana-main
 ~/dev-start.sh restart feat               # restart ES + Kibana in kibana-feat
