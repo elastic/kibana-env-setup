@@ -158,6 +158,8 @@ Called automatically in the left pane of every servers window:
 
 **Synthetics private locations with several Kibanas:** `run-data synthetics` derives the Fleet Server host port from the Kibana port (`8220 + port − 5601`; 5607 → 8226). Every instance (5601 included) gets its own `fleet-server-<port>` / `elastic-agent-<port>` containers with `--restart unless-stopped`, so they survive Docker restarts (the stock Kibana script uses `--rm` and a fixed port 8220; `--legacy` falls back to it). `run-data synthetics reset`, `dev-start.sh kill` and `switch` remove only that instance's containers. `dev-start.sh` also writes this port into `xpack.fleet.fleetServerHosts` in `kibana.dev.yml` (`__FLEET_SERVER_PORT__`); older worktrees still have `8220` and need it edited plus a Kibana restart.
 
+**Heartbeat monitors with several Kibanas:** `run-data synthetics heartbeat deploy` creates one minikube Agent per instance (`elastic-agent-synthetics-<kibana-port>`), each writing to its own ES; Service annotations are shared and only removed by `heartbeat reset` when no other Agent remains.
+
 **Manual usage:**
 ```bash
 kbn-start.sh <data-folder> --kibana-port 5601 --es-port 9200 --host kibana-feat.local

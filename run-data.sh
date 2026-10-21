@@ -1230,8 +1230,13 @@ except Exception:
         # monitor" surfacing consumes. See references/heartbeat-autodiscovery.md.
         local HB_NS_DEFAULT="otel-demo"       # namespace whose Services we monitor
         local HB_AGENT_NS="kube-system"        # where the Agent runs
-        local HB_MANIFEST="/tmp/kbn-dev-agent-synthetics.yaml"
-        local HB_KEY_NAME="kbn-dev-synthetics-agent"  # ES API key name for the Agent output
+        # One Agent per Kibana instance (suffix = Kibana port) so two worktrees — each with its
+        # own ES — can both have heartbeat monitors. All k8s resource names, the manifest file
+        # and the ES API key name carry the suffix; the otel-demo Service annotations are shared.
+        local HB_NAME="elastic-agent-synthetics-${KIBANA_PORT}"
+        local HB_CM_NAME="agent-synthetics-datastreams-${KIBANA_PORT}"
+        local HB_MANIFEST="/tmp/kbn-dev-agent-synthetics-${KIBANA_PORT}.yaml"
+        local HB_KEY_NAME="kbn-dev-synthetics-agent-${KIBANA_PORT}"  # ES API key name for the Agent output
         local HB_VERSION HB_IMAGE
         HB_VERSION=$(grep -m1 '"version"' package.json | sed 's/.*: *"//; s/".*//')
         HB_IMAGE="docker.elastic.co/elastic-agent/elastic-agent:${HB_VERSION}-SNAPSHOT"
@@ -1270,15 +1275,17 @@ except Exception:
             -e "s|__ES_HOST__|${es_host}|g" \
             -e "s|__API_KEY__|${safe_key}|g" \
             -e "s|__IMAGE__|${image}|g" \
-            -e "s|__AGENT_NS__|${agent_ns}|g"
+            -e "s|__AGENT_NS__|${agent_ns}|g" \
+            -e "s|__NAME__|${HB_NAME}|g" \
+            -e "s|__CM_NAME__|${HB_CM_NAME}|g"
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: agent-synthetics-datastreams
+  name: __CM_NAME__
   namespace: __AGENT_NS__
   labels:
-    app.kubernetes.io/name: elastic-agent-synthetics
+    app.kubernetes.io/name: __NAME__
 data:
   agent.yml: |-
     outputs:
@@ -1350,20 +1357,20 @@ data:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: elastic-agent-synthetics
+  name: __NAME__
   namespace: __AGENT_NS__
   labels:
-    app.kubernetes.io/name: elastic-agent-synthetics
+    app.kubernetes.io/name: __NAME__
 spec:
   selector:
     matchLabels:
-      app.kubernetes.io/name: elastic-agent-synthetics
+      app.kubernetes.io/name: __NAME__
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: elastic-agent-synthetics
+        app.kubernetes.io/name: __NAME__
     spec:
-      serviceAccountName: elastic-agent-synthetics
+      serviceAccountName: __NAME__
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
       containers:
@@ -1398,22 +1405,22 @@ spec:
         - name: datastreams
           configMap:
             defaultMode: 0644
-            name: agent-synthetics-datastreams
+            name: __CM_NAME__
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: elastic-agent-synthetics
+  name: __NAME__
   namespace: __AGENT_NS__
   labels:
-    app.kubernetes.io/name: elastic-agent-synthetics
+    app.kubernetes.io/name: __NAME__
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: elastic-agent-synthetics
+  name: __NAME__
   labels:
-    app.kubernetes.io/name: elastic-agent-synthetics
+    app.kubernetes.io/name: __NAME__
 rules:
   - apiGroups: [""]
     resources:
@@ -1440,23 +1447,23 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: elastic-agent-synthetics
+  name: __NAME__
 subjects:
   - kind: ServiceAccount
-    name: elastic-agent-synthetics
+    name: __NAME__
     namespace: __AGENT_NS__
 roleRef:
   kind: ClusterRole
-  name: elastic-agent-synthetics
+  name: __NAME__
   apiGroup: rbac.authorization.k8s.io
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: elastic-agent-synthetics
+  name: __NAME__
   namespace: __AGENT_NS__
   labels:
-    app.kubernetes.io/name: elastic-agent-synthetics
+    app.kubernetes.io/name: __NAME__
 rules:
   - apiGroups:
       - coordination.k8s.io
@@ -1467,15 +1474,15 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: elastic-agent-synthetics
+  name: __NAME__
   namespace: __AGENT_NS__
 subjects:
   - kind: ServiceAccount
-    name: elastic-agent-synthetics
+    name: __NAME__
     namespace: __AGENT_NS__
 roleRef:
   kind: Role
-  name: elastic-agent-synthetics
+  name: __NAME__
   apiGroup: rbac.authorization.k8s.io
 YAML
         }
@@ -1564,6 +1571,17 @@ YAML
           fi
           echo "   API key created."
 
+          # Pre-multi-instance deployments used one fixed name (elastic-agent-synthetics) that
+          # wrote to whichever ES deployed last. Remove it so it doesn't keep shipping pings.
+          if kubectl get deployment elastic-agent-synthetics -n "$HB_AGENT_NS" >/dev/null 2>&1; then
+            echo "▶ Removing legacy single-instance Agent (elastic-agent-synthetics)…"
+            kubectl delete deployment,serviceaccount,role,rolebinding elastic-agent-synthetics \
+              -n "$HB_AGENT_NS" --ignore-not-found >/dev/null 2>&1 || true
+            kubectl delete configmap agent-synthetics-datastreams -n "$HB_AGENT_NS" --ignore-not-found >/dev/null 2>&1 || true
+            kubectl delete clusterrole,clusterrolebinding elastic-agent-synthetics --ignore-not-found >/dev/null 2>&1 || true
+            echo "   (re-run 'heartbeat deploy' in any other worktree that relied on it)"
+          fi
+
           echo "▶ Generating manifest → $HB_MANIFEST"
           echo "   image: $HB_IMAGE"
           echo "   es:    $AGENT_ES_HOST"
@@ -1575,8 +1593,8 @@ YAML
           # "unchanged" and the running pod keeps the OLD (just-invalidated) key —
           # silently going stale. Force a new pod so it loads the fresh key.
           echo "▶ Restarting agent to load the fresh key…"
-          kubectl rollout restart deployment/elastic-agent-synthetics -n "$HB_AGENT_NS"
-          kubectl rollout status deployment/elastic-agent-synthetics -n "$HB_AGENT_NS" --timeout=120s || true
+          kubectl rollout restart deployment/${HB_NAME} -n "$HB_AGENT_NS"
+          kubectl rollout status deployment/${HB_NAME} -n "$HB_AGENT_NS" --timeout=120s || true
         }
 
         _hb_do_annotate() {
@@ -1725,7 +1743,7 @@ if ts:
                 ;;
               agent-down)
                 echo "▶ [break: agent-down] Scaling the Agent deployment to 0 replicas…"
-                kubectl scale deployment/elastic-agent-synthetics -n "$HB_AGENT_NS" --replicas=0 2>&1 || true
+                kubectl scale deployment/${HB_NAME} -n "$HB_AGENT_NS" --replicas=0 2>&1 || true
                 echo "   No Agent pod → no new pings."
                 _hb_break_symptom
                 echo "   Fix:  run-data synthetics heartbeat fix agent-down"
@@ -1764,8 +1782,8 @@ if ts:
               agent-down)
                 _hb_need kubectl || exit 1
                 echo "▶ [fix: agent-down] Scaling the Agent back to 1 replica…"
-                kubectl scale deployment/elastic-agent-synthetics -n "$HB_AGENT_NS" --replicas=1 2>&1 || true
-                kubectl rollout status deployment/elastic-agent-synthetics -n "$HB_AGENT_NS" --timeout=120s || true
+                kubectl scale deployment/${HB_NAME} -n "$HB_AGENT_NS" --replicas=1 2>&1 || true
+                kubectl rollout status deployment/${HB_NAME} -n "$HB_AGENT_NS" --timeout=120s || true
                 ;;
               unannotate)
                 _hb_do_annotate "${5:-}" || exit 1
@@ -1799,10 +1817,10 @@ if ts:
             _hb_need kubectl || exit 1
             echo "▶ Agent pod:"
             kubectl get pods -n "$HB_AGENT_NS" \
-              -l app.kubernetes.io/name=elastic-agent-synthetics 2>&1
+              -l app.kubernetes.io/name=${HB_NAME} 2>&1
             echo ""
             echo "▶ Recent agent logs:"
-            kubectl logs -n "$HB_AGENT_NS" deploy/elastic-agent-synthetics --tail=20 2>&1 \
+            kubectl logs -n "$HB_AGENT_NS" deploy/${HB_NAME} --tail=20 2>&1 \
               | grep -vi _encode || true
             ;;
 
@@ -1813,19 +1831,29 @@ if ts:
             if [[ -f "$HB_MANIFEST" ]]; then
               kubectl delete -f "$HB_MANIFEST" --ignore-not-found 2>&1 || true
             else
-              kubectl delete deployment,configmap,serviceaccount,role,rolebinding \
-                elastic-agent-synthetics -n "$HB_AGENT_NS" --ignore-not-found 2>&1 || true
-              kubectl delete clusterrole,clusterrolebinding elastic-agent-synthetics \
+              kubectl delete deployment,serviceaccount,role,rolebinding \
+                "$HB_NAME" -n "$HB_AGENT_NS" --ignore-not-found 2>&1 || true
+              kubectl delete configmap "$HB_CM_NAME" -n "$HB_AGENT_NS" --ignore-not-found 2>&1 || true
+              kubectl delete clusterrole,clusterrolebinding "$HB_NAME" \
                 --ignore-not-found 2>&1 || true
             fi
-            echo "▶ Removing annotations from Services in '$ns'…"
-            local svc
-            for svc in frontend product-catalog cart currency; do
-              kubectl annotate -n "$ns" service "$svc" \
-                co.elastic.monitor/type- co.elastic.monitor/id- co.elastic.monitor/name- \
-                co.elastic.monitor/hosts- co.elastic.monitor/schedule- co.elastic.monitor/timeout- \
-                >/dev/null 2>&1 || true
-            done
+            # The Service annotations are shared by every instance's Agent — only remove them
+            # when no other instance's Agent is left, otherwise their monitors would vanish.
+            local other_agents
+            other_agents=$(kubectl get deployment -n "$HB_AGENT_NS" -o name 2>/dev/null \
+              | grep -c 'elastic-agent-synthetics-' || true)
+            if [[ "${other_agents:-0}" -gt 0 ]]; then
+              echo "▶ Keeping Service annotations — ${other_agents} other instance Agent(s) still use them."
+            else
+              echo "▶ Removing annotations from Services in '$ns'…"
+              local svc
+              for svc in frontend product-catalog cart currency; do
+                kubectl annotate -n "$ns" service "$svc" \
+                  co.elastic.monitor/type- co.elastic.monitor/id- co.elastic.monitor/name- \
+                  co.elastic.monitor/hosts- co.elastic.monitor/schedule- co.elastic.monitor/timeout- \
+                  >/dev/null 2>&1 || true
+              done
+            fi
             echo "▶ Deleting k8s-autodiscover pings from synthetics-*…"
             curl -s -k -X POST "$ES_HOST/synthetics-*/_delete_by_query?conflicts=proceed" \
               -u "$ES_AUTH" -H "Content-Type: application/json" \

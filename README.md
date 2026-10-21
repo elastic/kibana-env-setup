@@ -317,6 +317,8 @@ run-data.sh fleet-reset  # wipe all Fleet state (monitors, private locations, ag
 
 ### Heartbeat / k8s autodiscovery monitors
 
+**Heartbeat with multiple Kibanas:** the minikube Agent is named per instance (`elastic-agent-synthetics-<kibana-port>`, with its own manifest, ConfigMap, RBAC and ES API key), so two worktrees with separate ES clusters can both show heartbeat monitors. Service annotations are shared; `heartbeat reset` keeps them while another instance's Agent exists. The first `deploy` removes the old single fixed-name Agent.
+
 `run-data.sh synthetics heartbeat` sets up **read-only "heartbeat" monitors** — pings shipped straight to `synthetics-*` by an Elastic Agent running Kubernetes autodiscovery, with **no Kibana saved object** behind them. This is the input the Synthetics app's heartbeat-monitor surfacing consumes, so it's what you need to review/verify that feature.
 
 **One-shot (recommended):** `up` runs the whole pipeline — starts minikube (if needed), deploys the OpenTelemetry demo (if the namespace is missing), deploys the Agent, annotates the Services, waits, and verifies:

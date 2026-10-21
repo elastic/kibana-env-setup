@@ -260,6 +260,14 @@ Mock data from `generate-monitors.js` can make monitors look Up even if the agen
 exit 125 (docker run failed) or 143 (Fleet Server timed out, usually missing `fleet-server-policy`),
 see `references/troubleshooting.md` → "Synthetics private location fails".
 
+**Heartbeat (minikube) with multiple Kibanas:** `run-data synthetics heartbeat deploy` names the
+Agent and its resources per instance (`elastic-agent-synthetics-<kibana-port>`, manifest
+`/tmp/kbn-dev-agent-synthetics-<port>.yaml`, API key `kbn-dev-synthetics-agent-<port>`), so each
+worktree's ES gets its own Agent and heartbeat monitors are Up in both. Service annotations are
+shared; `heartbeat reset` removes them only when no other instance's Agent remains. If heartbeat
+monitors are stale in one Kibana but Up in another, the old single-name Agent was overwriting —
+re-run `heartbeat deploy` in the stale worktree. Details: `references/heartbeat-autodiscovery.md`.
+
 **Multiple Kibanas, persistent containers:** the Kibana script hardcodes Fleet Server host port 8220
 and `--rm` containers, so it supports only one instance and its containers disappear when Docker
 stops. `run-data synthetics` derives a Fleet Server port from the Kibana port in `kibana.dev.yml`
