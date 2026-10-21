@@ -156,6 +156,8 @@ Called automatically in the left pane of every servers window:
 4. Watches `/tmp/es-<name>.log` for ES ready signal
 5. When ES is ready → sends `nvm use` + `yarn start` (or `pnpm start`) to the right pane automatically, including `--xpack.security.cookieName=sid-<kibana-port>` so instances on `localhost` don't share the default `sid` cookie and log each other out
 
+**Synthetics private locations with several Kibanas:** `run-data synthetics` derives the Fleet Server host port from the Kibana port (`8220 + port − 5601`; 5607 → 8226). Every instance (5601 included) gets its own `fleet-server-<port>` / `elastic-agent-<port>` containers with `--restart unless-stopped`, so they survive Docker restarts (the stock Kibana script uses `--rm` and a fixed port 8220; `--legacy` falls back to it). `run-data synthetics reset`, `dev-start.sh kill` and `switch` remove only that instance's containers. `dev-start.sh` also writes this port into `xpack.fleet.fleetServerHosts` in `kibana.dev.yml` (`__FLEET_SERVER_PORT__`); older worktrees still have `8220` and need it edited plus a Kibana restart.
+
 **Manual usage:**
 ```bash
 kbn-start.sh <data-folder> --kibana-port 5601 --es-port 9200 --host kibana-feat.local

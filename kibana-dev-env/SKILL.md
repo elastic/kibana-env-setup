@@ -260,6 +260,20 @@ Mock data from `generate-monitors.js` can make monitors look Up even if the agen
 exit 125 (docker run failed) or 143 (Fleet Server timed out, usually missing `fleet-server-policy`),
 see `references/troubleshooting.md` → "Synthetics private location fails".
 
+**Multiple Kibanas, persistent containers:** the Kibana script hardcodes Fleet Server host port 8220
+and `--rm` containers, so it supports only one instance and its containers disappear when Docker
+stops. `run-data synthetics` derives a Fleet Server port from the Kibana port in `kibana.dev.yml`
+(`8220 + port - 5601`: 5601→8220, 5607→8226), creates the policy, location and enrollment token
+via the API, and starts `fleet-server-<port>` / `elastic-agent-<port>` with `--restart
+unless-stopped` for EVERY instance (they survive Docker restarts). `--legacy` runs the
+stock Kibana script instead. `run-data synthetics reset`, `dev-start.sh kill <branch>` and `switch`
+remove only the containers belonging to that instance. After an ES data reset or branch/version
+switch, re-run `run-data synthetics` (stale enrollment, pinned image version). If a user's agents
+vanished after Docker closed, they were `--rm` containers from the stock script — just re-run. `dev-start.sh` writes the
+same port into `xpack.fleet.fleetServerHosts` in `kibana.dev.yml` (`__FLEET_SERVER_PORT__` in the
+template). A worktree generated earlier still has `8220` there: agents then stay "Updating"/
+"Unhealthy" because they check in to another instance's Fleet Server — edit the port and restart Kibana.
+
 For remote ES, it auto-reduces concurrency (payload 1000, concurrency 1,
 events-per-cycle 10) to avoid timeouts.
 

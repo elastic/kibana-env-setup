@@ -210,6 +210,7 @@ generate_kibana_dev_yml() {
     -e "s/__KIBANA_PORT__/$kibana_port/g" \
     -e "s/__ES_PORT__/$es_port/g" \
     -e "s|__FLEET_ES_HOST__|http://host.docker.internal:$es_port|g" \
+    -e "s/__FLEET_SERVER_PORT__/$(( 8220 + kibana_port - 5601 ))/g" \
     "$TEMPLATE" > "$dir/config/kibana.dev.yml"
 
   echo "${GREEN}✓${NC} config/kibana.dev.yml  → Kibana :$kibana_port  ES :$es_port"
@@ -264,7 +265,8 @@ generate_remote_kibana_dev_yml() {
     # Append Fleet config from template (everything after the ES connection block)
     # Substitute placeholders with remote values
     sed -n '/^# Create an agent policy/,$ p' "$TEMPLATE" \
-      | sed "s|__FLEET_ES_HOST__|${remote_host}|g"
+      | sed -e "s|__FLEET_ES_HOST__|${remote_host}|g" \
+            -e "s/__FLEET_SERVER_PORT__/$(( 8220 + kibana_port - 5601 ))/g"
   } > "$dir/config/kibana.dev.yml"
 
   echo "${GREEN}✓${NC} config/kibana.dev.yml  → Kibana :$kibana_port  ES: ${BLUE}${remote_host:-remote}${NC}"
@@ -1073,6 +1075,7 @@ cmd_switch() {
   if [[ -f "$STATE_FILE" ]]; then
     source "$STATE_FILE"
     if [[ -n "${FEAT_DIR:-}" && "$FEAT_DIR" != "$worktree_dir" && -d "$FEAT_DIR" ]]; then
+      remove_fleet_containers "$FEAT_DIR"
       echo "${BLUE}→${NC} Removing old worktree at $FEAT_DIR..."
       if ! git -C "$KIBANA_MAIN_DIR" worktree remove "$FEAT_DIR" --force 2>/dev/null; then
         echo "${YELLOW}⚠${NC} git worktree remove failed (directory not empty) — force-deleting..."
@@ -1267,6 +1270,19 @@ cmd_attach() {
   tmux_attach "$session"
 }
 
+# Remove the persistent synthetics Fleet Server / Agent containers that
+# `run-data synthetics` started for a worktree (fleet-server-<port> / elastic-agent-<port>).
+# They use --restart unless-stopped, so they would otherwise outlive the worktree.
+remove_fleet_containers() {
+  local dir="$1" port
+  command -v docker >/dev/null 2>&1 || return 0
+  port=$(grep -E "^ *port:" "$dir/config/kibana.dev.yml" 2>/dev/null | head -1 | awk '{print $2}')
+  [[ -z "$port" ]] && return 0
+  if docker rm -f "fleet-server-$port" "elastic-agent-$port" >/dev/null 2>&1; then
+    echo "${GREEN}✓${NC} Removed Fleet Server/Agent containers for :$port"
+  fi
+}
+
 cmd_kill() {
   local branch="$1"
   if [[ -z "$branch" ]]; then
@@ -1292,6 +1308,7 @@ cmd_kill() {
   fi
 
   if [[ -d "$worktree_dir" ]]; then
+    remove_fleet_containers "$worktree_dir"
     echo "${BLUE}→${NC} Removing worktree at $worktree_dir..."
     if ! git -C "$KIBANA_MAIN_DIR" worktree remove "$worktree_dir" --force 2>/dev/null; then
       echo "${YELLOW}⚠${NC} git worktree remove failed — force-deleting..."

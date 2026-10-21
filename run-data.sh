@@ -4,6 +4,7 @@
 #
 #  USAGE:
 #    run-data slo [good|bad|mixed]            → ingest SLO fake_stack data (default: good)
+#    run-data synthetics --legacy             → same, but via the stock Kibana script (fallback; --rm containers, port 8220)
 #    run-data synthetics                     → create synthetics private location
 #    run-data synthetics monitors            → create ~40 monitors + mock data (idempotent, uses existing locations)
 #    run-data synthetics monitors --minimal → create 4 monitors (1 per type) + mock data
@@ -759,8 +760,17 @@ for item in data.get('items', []):
           echo "   ⚠ Docker daemon not responding (docker info timed out/failed)."
           echo "     Restart Docker Desktop, then re-run reset. Skipping container cleanup."
         else
+        # Scope to THIS Kibana's containers so resetting one instance doesn't kill another's:
+        #   always                       → fleet-server-<port> / elastic-agent-<port>
+        #   first instance (FLEET_PORT 8220) → also legacy/stock unnamed containers (random names)
+        local rd_fleet_port=$(( 8220 + KIBANA_PORT - 5601 ))
+        local rd_suffix_re='^(fleet-server|elastic-agent)-[0-9]+$'
         for cid in $(_rd_timeout 15 docker ps -a --format '{{.ID}} {{.Names}} {{.Image}}' 2>/dev/null \
-                     | grep -iE 'fleet.server|elastic.agent' | awk '{print $1}'); do
+                     | grep -iE 'fleet.server|elastic.agent' \
+                     | awk -v port="$KIBANA_PORT" -v first="$(( rd_fleet_port <= 8220 ))" -v re="$rd_suffix_re" '
+                         { suffixed = ($2 ~ re)
+                           if ($2 ~ ("-" port "$")) print $1
+                           else if (first == 1 && !suffixed) print $1 }'); do
           cname=$(_rd_timeout 10 docker inspect --format '{{.Name}}' "$cid" 2>/dev/null | tr -d '/')
           if ! _rd_timeout 20 docker stop -t 5 "$cid" >/dev/null 2>&1; then
             echo "   ⚠ docker stop timed out for $cname ($cid) — forcing kill"
@@ -978,7 +988,10 @@ except: pass
           --elasticsearch-password "${DATA_PASSWORD}" \
           "${monitor_flags[@]}"
         ;;
-      "")
+      ""|--legacy)
+        # `run-data synthetics --legacy` → use the stock Kibana script (see below)
+        local USE_LEGACY_PL=false
+        [[ "$2" == "--legacy" ]] && USE_LEGACY_PL=true
         # ── Pre-flight checks (local AND remote) ─────────────────────────
         # The Kibana script launches Fleet Server in Docker and waits ~120s for it to
         # become healthy. Most failures come from the things checked below.
@@ -992,8 +1005,9 @@ except: pass
         # 2. Stale Fleet/Agent containers hold port 8220 / the container name (exit 125)
         local stale
         stale=$(_rd_timeout 15 docker ps -a --format '{{.ID}} {{.Names}} {{.Image}}' 2>/dev/null \
-                | grep -iE 'fleet.server|elastic.agent')
-        if [[ -n "$stale" ]]; then
+                | grep -iE 'fleet.server|elastic.agent' \
+                | grep -vE " (fleet-server|elastic-agent)-[0-9]+ ")   # named per-instance containers: recreated below
+        if [[ -n "$stale" && "$USE_LEGACY_PL" == true ]]; then
           echo "⚠  Found existing Fleet/Agent container(s) that may block port 8220:"
           echo "$stale" | sed 's/^/     /'
           echo "   If setup fails, run: run-data synthetics reset"
@@ -1072,12 +1086,97 @@ except: pass
         fi
         echo ""
 
+        # The Kibana script hardcodes Fleet Server host port 8220, the agent's FLEET_URL
+        # (host.docker.internal:8220) and `docker run --rm`, so it only works for ONE Kibana
+        # per machine and its containers vanish whenever Docker stops. Instead, every
+        # instance gets its own named Fleet Server + Agent (`--restart unless-stopped`) on a
+        # per-instance port derived from the Kibana port (5601→8220, 5607→8226, …).
+        # Escape hatch: `run-data synthetics --legacy` runs the stock Kibana script (only sane
+        # when no other instance is using port 8220).
+        local FLEET_PORT=$(( 8220 + KIBANA_PORT - 5601 ))
+        local exit_code
+        if [[ "$USE_LEGACY_PL" == true ]]; then
         node x-pack/scripts/synthetics_private_location.js \
           --elasticsearch-host "${ES_HOST}" \
           --kibana-url "$KIBANA_URL" \
           --kibana-username "${DATA_USERNAME}" \
           --kibana-password "${DATA_PASSWORD}" 2>&1
-        local exit_code=$?
+        exit_code=$?
+        else
+        echo "▶ Kibana :${KIBANA_PORT} → own Fleet Server on host port ${FLEET_PORT} (persistent containers; --legacy uses the stock script)"
+        exit_code=0
+        local fs_name="fleet-server-${KIBANA_PORT}" ag_name="elastic-agent-${KIBANA_PORT}"
+        local d_kibana="${KIBANA_URL/localhost/host.docker.internal}"
+        local d_es="${ES_HOST/localhost/host.docker.internal}"
+        d_es="${d_es/127.0.0.1/host.docker.internal}"
+        local pl_label="Default location $(uuidgen | tr 'A-Z' 'a-z')"
+        local pol_resp pol_id loc_resp loc_id tok_resp tok
+        local jq_py='import sys,json
+try:
+    d=json.load(sys.stdin); print(eval(sys.argv[1]))
+except Exception:
+    print("")'
+        # Agent policy + private location + enrollment token (same API calls as the Kibana script)
+        pol_resp=$(curl -s -X POST "$KIBANA_URL/api/fleet/agent_policies" -H "kbn-xsrf: true" \
+          -H "content-type: application/json" -u "$AUTH" --max-time 30 \
+          -d "{\"name\":\"Synthetics agent policy $(uuidgen | tr 'A-Z' 'a-z')\",\"description\":\"\",\"namespace\":\"default\",\"monitoring_enabled\":[\"logs\",\"metrics\"],\"inactivity_timeout\":1209600,\"is_protected\":false}")
+        pol_id=$(echo "$pol_resp" | python3 -c "$jq_py" "d['item']['id']")
+        if [[ -z "$pol_id" ]]; then
+          echo "❌  Could not create agent policy: $pol_resp"; exit_code=1
+        else
+          loc_resp=$(curl -s -X POST "$KIBANA_URL/api/synthetics/private_locations" -H "kbn-xsrf: true" \
+            -H "content-type: application/json" -u "$AUTH" --max-time 30 \
+            -d "{\"label\":\"${pl_label}\",\"agentPolicyId\":\"${pol_id}\"}")
+          loc_id=$(echo "$loc_resp" | python3 -c "$jq_py" "d['id']")
+          tok_resp=$(curl -s "$KIBANA_URL/api/fleet/enrollment_api_keys?kuery=policy_id:${pol_id}" \
+            -H "kbn-xsrf: true" -u "$AUTH" --max-time 30)
+          tok=$(echo "$tok_resp" | python3 -c "$jq_py" "d['list'][0]['api_key']")
+          if [[ -z "$loc_id" || -z "$tok" ]]; then
+            echo "❌  Could not create private location / enrollment token."
+            echo "    location: $loc_resp"; exit_code=1
+          else
+            echo "✓ Private location: ${pl_label} (${loc_id}) — agent policy ${pol_id}"
+          fi
+        fi
+        if [[ $exit_code -eq 0 ]]; then
+          local agent_img_ver="$agent_ver"
+          [[ -z "$agent_img_ver" ]] && agent_img_ver="$(curl -s --max-time 10 -u "$AUTH" "$KIBANA_URL/api/status" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['version']['number'] + '-SNAPSHOT')" 2>/dev/null)"
+          docker rm -f "$fs_name" "$ag_name" >/dev/null 2>&1
+          # --restart unless-stopped (not --rm): survives Docker Desktop restarts
+          if ! docker run -d --name "$fs_name" --restart unless-stopped \
+              -e FLEET_SERVER_ENABLE=1 -e "FLEET_SERVER_ELASTICSEARCH_HOST=${d_es}" \
+              -e FLEET_SERVER_POLICY_ID=fleet-server-policy -e FLEET_INSECURE=1 \
+              -e "KIBANA_HOST=${d_kibana}" -e "KIBANA_USERNAME=${DATA_USERNAME}" \
+              -e "KIBANA_PASSWORD=${DATA_PASSWORD}" -e KIBANA_FLEET_SETUP=1 \
+              -p "${FLEET_PORT}:8220" \
+              "docker.elastic.co/elastic-agent/elastic-agent:${agent_img_ver}" >/dev/null; then
+            echo "❌  Could not start Fleet Server container ${fs_name}"; exit_code=125
+          else
+            echo "Waiting for Fleet Server on :${FLEET_PORT} (up to 120s)…"
+            local fs_try fs_ok=false
+            for fs_try in {1..40}; do
+              if curl -sk --max-time 5 "https://localhost:${FLEET_PORT}/api/status" | grep -qE 'HEALTHY|online'; then
+                fs_ok=true; break
+              fi
+              sleep 3
+            done
+            if [[ "$fs_ok" != true ]]; then
+              echo "❌  Fleet Server did not become healthy — docker logs ${fs_name}"; exit_code=143
+            elif ! docker run -d --name "$ag_name" --restart unless-stopped \
+                -e "FLEET_URL=https://host.docker.internal:${FLEET_PORT}" -e FLEET_ENROLL=1 \
+                -e "FLEET_ENROLLMENT_TOKEN=${tok}" -e FLEET_INSECURE=1 \
+                "docker.elastic.co/elastic-agent/elastic-agent-complete:${agent_img_ver}" >/dev/null; then
+              echo "❌  Could not start Agent container ${ag_name}"; exit_code=125
+            else
+              echo "✓ Started ${fs_name} (:${FLEET_PORT}) and ${ag_name}"
+              echo "  They auto-restart with Docker and keep running until removed:"
+              echo "    docker rm -f ${fs_name} ${ag_name}      (or: run-data synthetics reset)"
+              echo "  Re-run 'run-data synthetics' after an ES data reset or a branch/version switch."
+            fi
+          fi
+        fi
+        fi
         if [[ $exit_code -ne 0 ]]; then
           echo ""
           echo "❌  synthetics_private_location.js failed (exit code $exit_code)"
@@ -1768,6 +1867,7 @@ if ts:
         echo "Usage: run-data synthetics [monitors|break|fix|reset|heartbeat] [scenario]"
         echo ""
         echo "  (no args)   Create private location (default setup)"
+        echo "  --legacy               Same, via the stock Kibana script (fallback: --rm containers, port 8220)"
         echo "  monitors              Create ~40 monitors + mock data (idempotent)"
         echo "  monitors --minimal    Create 4 monitors (1 per type) + mock data"
         echo "  break <s>   Trigger failure scenario <s>"

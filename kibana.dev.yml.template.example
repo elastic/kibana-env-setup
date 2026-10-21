@@ -59,7 +59,7 @@ xpack.fleet.fleetServerHosts:
   - id: default-fleet-server
     name: Default Fleet server
     is_default: true
-    host_urls: ['https://host.docker.internal:8220'] # For running a Fleet Server Docker container
+    host_urls: ['https://host.docker.internal:__FLEET_SERVER_PORT__'] # For running a Fleet Server Docker container (host port = 8220 + kibana port - 5601)
 
 # Set a default Elasticsearch output.
 xpack.fleet.outputs:

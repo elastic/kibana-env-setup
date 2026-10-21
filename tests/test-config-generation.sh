@@ -58,7 +58,7 @@ it "does not leave any unreplaced placeholders"
   worktree="$TEST_DIR/worktree-local-4"
   mkdir -p "$worktree"
   generate_kibana_dev_yml "$worktree" 5601 9200 > /dev/null 2>&1
-  assert_file_not_contains "$worktree/config/kibana.dev.yml" "__KIBANA_PORT__|__ES_PORT__"
+  assert_file_not_contains "$worktree/config/kibana.dev.yml" "__KIBANA_PORT__|__ES_PORT__|__FLEET_SERVER_PORT__"
 
 it "sets elasticsearch.username to kibana"
   worktree="$TEST_DIR/worktree-local-6"
