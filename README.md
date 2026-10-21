@@ -285,6 +285,8 @@ When `--remote` is passed, `dev-start.sh` generates `kibana.dev.yml` using the c
 
 **yarn vs pnpm:** newer Kibana branches (e.g. 9.5.x) use pnpm, older ones still use yarn. `kbn-start.sh` picks the right one per worktree (pnpm if `package.json` declares `"packageManager": "pnpm@…"` or `pnpm-lock.yaml` exists) and runs `corepack enable` if `pnpm` isn't available for the active Node version.
 
+**Per-port session cookie:** browser cookies are scoped by host, not port, so two instances on `localhost` (e.g. 5601 and 5607) would share Kibana's default `sid` cookie and log each other out. `kbn-start.sh` passes `--xpack.security.cookieName=sid-<kibana-port>` so every instance has its own session. Restart Kibana (and clear the old `sid` cookie once) after upgrading.
+
 Without `--remote`, the default local ES setup is used. To switch between local and remote, just re-run `switch` with or without the flag — no manual config editing needed.
 
 Both YAML formats are detected by `kbn-start.sh`:

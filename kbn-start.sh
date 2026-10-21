@@ -73,6 +73,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 ES_DATA_PATH="$ES_DATA_BASE/$ES_DATA_FOLDER"
+# Browser cookies are scoped by host, not port — instances on localhost:5601 and
+# localhost:5607 would share the default "sid" cookie and log each other out.
+# A per-port cookie name keeps the sessions independent.
+KBN_COOKIE_ARG="--xpack.security.cookieName=sid-${KIBANA_PORT}"
 LOGFILE="/tmp/es-${ES_DATA_FOLDER}.log"
 ES_TRANSPORT_PORT=$((ES_PORT + 100))
 # ── END ARGUMENT PARSING ──────────────────────────────────
@@ -165,7 +169,7 @@ if [[ "$USE_REMOTE_ES" == true ]]; then
     C-m
   sleep 2
   tmux send-keys -t "$TMUX_TARGET_PANE" \
-    "${PM} start --no-base-path --host=${KIBANA_HOST} --port=${KIBANA_PORT} ${KBN_EXTRA_ARGS}" \
+    "${PM} start --no-base-path --host=${KIBANA_HOST} --port=${KIBANA_PORT} ${KBN_COOKIE_ARG} ${KBN_EXTRA_ARGS}" \
     C-m
   echo "✅  Kibana starting on http://${KIBANA_HOST}:${KIBANA_PORT} → ES: ${ES_HOST_LINE}"
   echo "    (ES host is configured in ${KIBANA_DEV_YML})"
@@ -185,7 +189,7 @@ else
           C-m
         sleep 2
         tmux send-keys -t "$TMUX_TARGET_PANE" \
-          "${PM} start --no-base-path --host=${KIBANA_HOST} --port=${KIBANA_PORT} --elasticsearch.hosts=http://localhost:${ES_PORT} ${KBN_EXTRA_ARGS}" \
+          "${PM} start --no-base-path --host=${KIBANA_HOST} --port=${KIBANA_PORT} --elasticsearch.hosts=http://localhost:${ES_PORT} ${KBN_COOKIE_ARG} ${KBN_EXTRA_ARGS}" \
           C-m
         break
       fi

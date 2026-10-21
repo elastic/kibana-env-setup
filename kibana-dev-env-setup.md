@@ -154,7 +154,7 @@ Called automatically in the left pane of every servers window:
 2. Runs `yarn kbn bootstrap` — or `pnpm kbn bootstrap` on pnpm branches (auto-detected from `package.json` / `pnpm-lock.yaml`; runs `corepack enable` if pnpm is missing)
 3. Starts `yarn es snapshot --license trial` (`pnpm es snapshot` on pnpm branches) with correct ports and data path
 4. Watches `/tmp/es-<name>.log` for ES ready signal
-5. When ES is ready → sends `nvm use` + `yarn start` (or `pnpm start`) to the right pane automatically
+5. When ES is ready → sends `nvm use` + `yarn start` (or `pnpm start`) to the right pane automatically, including `--xpack.security.cookieName=sid-<kibana-port>` so instances on `localhost` don't share the default `sid` cookie and log each other out
 
 **Manual usage:**
 ```bash

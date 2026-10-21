@@ -54,6 +54,12 @@ never suggest running `yarn start` directly without port flags. Newer Kibana bra
 `pnpm kbn bootstrap` / `pnpm es snapshot` / `pnpm start`, running `corepack enable`
 if pnpm is missing. Don't tell the user to run yarn on a pnpm branch (or vice versa).
 
+`kbn-start.sh` also passes `--xpack.security.cookieName=sid-<kibana-port>` so multiple
+instances on `localhost` don't share the default `sid` cookie (cookies are scoped by
+host, not port — otherwise logging in to one instance logs you out of the others).
+If a user reports being logged out of one Kibana when logging in to another, restart
+that instance via `kbn-start.sh`; don't suggest editing `kibana.dev.yml`.
+
 `kbn-start.sh` also handles Node version switching (`nvm use`) automatically before
 starting ES or Kibana. Never tell the developer to run `nvm use` manually — the
 scripts take care of it.
