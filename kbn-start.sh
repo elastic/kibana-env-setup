@@ -160,7 +160,74 @@ if [[ -f "$KIBANA_DEV_YML" ]]; then
   fi
 fi
 
-if [[ "$USE_REMOTE_ES" == true ]]; then
+# ── Detect serverless from kibana.dev.yml ─────────────────
+# dev-start.sh --serverless[=oblt|security|es] writes a "# Serverless: <type>" marker.
+# Serverless takes precedence over remote detection (its dev yml points at localhost).
+SERVERLESS_TYPE=""
+if [[ -f "$KIBANA_DEV_YML" ]]; then
+  SERVERLESS_TYPE=$(sed -n 's/^# Serverless: *\([a-z]*\).*/\1/p' "$KIBANA_DEV_YML" | head -1)
+fi
+
+if [[ -n "$SERVERLESS_TYPE" ]]; then
+  # `${PM} es serverless` runs ES in Docker; `${PM} serverless-<type>` runs Kibana.
+  # (replaces the two manual tabs: `yarn es serverless --projectType oblt` + `yarn serverless-oblt`)
+  if ! docker info >/dev/null 2>&1; then
+    echo "Error: Docker is not running — serverless ES needs it. Start Docker Desktop and re-run." >&2
+    exit 1
+  fi
+  # Serverless ES is secured with fixed dev credentials; poll health with them (a bare
+  # 401 would also mean "up", but 200 on _cluster/health means nodes have actually formed).
+  SL_ES_USER="${SERVERLESS_ES_USER:-elastic_serverless}"
+  SL_ES_PASS="${SERVERLESS_ES_PASS:-changeme}"
+  # Serverless Kibana needs the mock IdP: `--mockIdpPlugin.enabled=false` (a common stateful
+  # KBN_EXTRA_ARGS) makes it skip SAML/UIAM auto-config and die with
+  # "`xpack.security.uiam.enabled` must be `true` on serverless deployments".
+  if [[ "$KBN_EXTRA_ARGS" == *"--mockIdpPlugin.enabled=false"* ]]; then
+    echo "⚠  Dropping --mockIdpPlugin.enabled=false from KBN_EXTRA_ARGS (serverless requires the mock IdP)."
+    KBN_EXTRA_ARGS="${KBN_EXTRA_ARGS//--mockIdpPlugin.enabled=false/}"
+  fi
+  echo "▶ Serverless (${SERVERLESS_TYPE}) — starting Docker ES... (Kibana will auto-start once ES is ready)"
+  echo "  First run pulls the serverless ES image — this can take several minutes."
+  (
+    for _ in $(seq 1 600); do
+      # Serverless ES serves HTTPS with a dev certificate → https + -k
+      code=$(curl -sk -o /dev/null -w "%{http_code}" -u "${SL_ES_USER}:${SL_ES_PASS}" \
+        "https://localhost:${ES_PORT}/_cluster/health?wait_for_status=yellow&timeout=1s" --max-time 3 2>/dev/null || true)
+      if [[ "$code" == "200" ]]; then
+        tmux send-keys -t "$TMUX_TARGET_PANE" \
+          "export NVM_DIR=\"\$HOME/.nvm\" && [[ -s \"\$NVM_DIR/nvm.sh\" ]] && source \"\$NVM_DIR/nvm.sh\" && nvm use" \
+          C-m
+        sleep 2
+        # No per-port cookie flag here: serverless Kibana manages its own session config.
+        tmux send-keys -t "$TMUX_TARGET_PANE" \
+          "${PM} serverless-${SERVERLESS_TYPE} --no-base-path --host=${KIBANA_HOST} --port=${KIBANA_PORT} --elasticsearch.hosts=https://localhost:${ES_PORT} ${KBN_EXTRA_ARGS}" \
+          C-m
+        break
+      fi
+      sleep 3
+    done
+  ) &
+
+  # `es serverless --projectType` uses long names; the Kibana script suffix (serverless-<type>)
+  # uses the short ones. Older branches accepted "oblt" for ES too — override if needed:
+  #   SERVERLESS_ES_PROJECT_TYPE=oblt in ~/.kibana-dev.conf
+  case "$SERVERLESS_TYPE" in
+    oblt) SL_ES_PROJECT_TYPE="observability" ;;
+    es)   SL_ES_PROJECT_TYPE="elasticsearch" ;;
+    *)    SL_ES_PROJECT_TYPE="$SERVERLESS_TYPE" ;;
+  esac
+  SL_ES_PROJECT_TYPE="${SERVERLESS_ES_PROJECT_TYPE:-$SL_ES_PROJECT_TYPE}"
+
+  # --kill: `es serverless` refuses to start while containers from an earlier run exist.
+  # Only one serverless ES can run at a time anyway (fixed container names), so any
+  # leftover/other serverless ES is stopped on startup.
+  echo "⚠  Starting with --kill: any running serverless ES containers will be stopped."
+  ${PM} es serverless \
+    --kill \
+    --projectType "${SL_ES_PROJECT_TYPE}" \
+    --port "${ES_PORT}" \
+    2>&1 | tee "$LOGFILE"   # no -a: serverless nodes are chatty and nothing reads this log (readiness polls HTTP)
+elif [[ "$USE_REMOTE_ES" == true ]]; then
   echo "▶ Remote ES detected: ${ES_HOST_LINE}"
   echo "  Skipping local ES — starting Kibana directly..."
   echo ""

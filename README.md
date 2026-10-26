@@ -126,6 +126,8 @@ That's it for your morning start. It creates any missing sessions and attaches t
 ~/dev-start.sh new <branch> --full        # temporary session with full layout (checks + ftr)
 ~/dev-start.sh new <branch> --remote      # temporary session with remote ES
 ~/dev-start.sh new <branch> --full --remote  # full session + remote ES
+~/dev-start.sh switch <branch> --serverless  # serverless oblt (Docker ES + serverless Kibana); =security / =es for other project types
+~/dev-start.sh new <branch> --serverless     # temporary serverless session
 ~/dev-start.sh sync                       # regenerate kibana.dev.yml from template (all sessions)
 ~/dev-start.sh sync feat                  # regenerate for a specific session
 ~/dev-start.sh sync main --remote         # switch kibana-main to remote ES
@@ -147,7 +149,7 @@ That's it for your morning start. It creates any missing sessions and attaches t
 ~/dev-start.sh kill <branch>              # kill session + remove worktree
 ~/dev-start.sh kill-all                   # kill all kibana-* sessions
 ~/dev-start.sh prune                      # remove orphaned worktrees (no active session)
-~/dev-start.sh list                       # show sessions, worktrees, port assignments + warnings
+~/dev-start.sh list                       # show sessions, worktrees, port assignments, memory summary + warnings
 ~/dev-start.sh attach <branch>            # attach to an existing temporary session
 ~/dev-start.sh help                       # usage
 ```
@@ -289,6 +291,19 @@ When `--remote` is passed, `dev-start.sh` generates `kibana.dev.yml` using the c
 
 Without `--remote`, the default local ES setup is used. To switch between local and remote, just re-run `switch` with or without the flag — no manual config editing needed.
 
+### Serverless (`--serverless[=oblt|security|es]`)
+
+Replaces the two manual tabs (`yarn es serverless --projectType observability` + `yarn serverless-oblt`).
+
+- `dev-start.sh` writes a minimal `kibana.dev.yml` (stateful-only `xpack.*` keys break serverless Kibana) with a `# Serverless: <type>` marker and an `https://localhost:<es-port>` host line. `kbn-start.sh` detects the marker, so `restart`, `recover`, `sync`, `list` and `status` need no extra flags.
+- **Project types:** you pass `oblt|security|es`; `kbn-start.sh` maps them for the ES CLI (`oblt` → `observability`, `es` → `elasticsearch`, `security` unchanged) while Kibana keeps the short names (`yarn serverless-<type>`). Older branches that still expect `oblt` for ES: set `SERVERLESS_ES_PROJECT_TYPE=oblt` in `~/.kibana-dev.conf`.
+- **ES runs in Docker over HTTPS** (dev certificate): the readiness poll and `status` use `https` + `-k` (creds `elastic_serverless`/`changeme`, override with `SERVERLESS_ES_USER`/`SERVERLESS_ES_PASS`). Kibana's own serverless dev mode sets the ES CA itself.
+- **Startup:** checks Docker is running, runs `es serverless --kill ...` (stops leftover serverless containers — the CLI refuses to start otherwise), waits for `_cluster/health`, then starts `yarn serverless-<type>` in the right pane. The ES log is truncated on each start (the nodes are chatty).
+- **Mock IdP / UIAM:** serverless Kibana needs the mock IdP. `--mockIdpPlugin.enabled=false` in `KBN_EXTRA_ARGS` makes it die with "`xpack.security.uiam.enabled` must be `true`", so `kbn-start.sh` drops that flag in serverless mode (with a warning).
+- **One serverless session at a time:** the Docker containers have fixed names (`es01`…, `uiam`, `uiam-cosmosdb`). `restart`, `kill` and `switch` remove them instead of killing the port (which would hit Docker).
+- **Not passed in serverless mode:** the per-port cookie flag. `kibana-main` has no `--serverless` flag.
+- **Memory:** serverless ES runs as Docker containers (2 ES nodes `es01`/`es02` plus `uiam` and `uiam-cosmosdb`, ~6 GB total in one measurement), and every Kibana dev instance runs its own optimizer. `dev-start.sh list` prints an approximate memory summary and warns above `MEM_WARN_GB` (default 16) of Kibana/ES node processes or `MEM_WARN_INSTANCES` (default 3) *running* Kibana instances (idle tmux sessions are shown but not counted; the figure is resident memory, so Activity Monitor can show more because macOS compresses/swaps). Fixes: stop idle sessions, `restart <s> --no-watch` for secondary ones, and check `docker stats --no-stream` to see which containers hold the memory (serverless ES heap is fixed at ~1.5 GB per node by `kbn-es`, so Docker Desktop's memory setting won't shrink the nodes — but macOS can show Docker at 3x the containers' real use because its VM keeps grown memory/cache; a cap of ~10–12 GB bounds that, and restarting Docker Desktop releases it). Symptoms of starvation: Fleet "Request timed out" retries and "Event loop utilization" warnings.
+
 Both YAML formats are detected by `kbn-start.sh`:
 - **Template format**: `elasticsearch.hosts:` → `- "http://..."`
 - **oblt-cli format**: `elasticsearch:` → `hosts: https://...`
@@ -396,7 +411,7 @@ The tests use a lightweight bash framework (`tests/test-helpers.sh`) — no exte
 
 | Suite | What it covers |
 |---|---|
-| `test-config-generation` | Local + remote `kibana.dev.yml` generation, port substitution, placeholder removal, server block stripping, switching between local/remote |
+| `test-config-generation` | Local + remote + serverless `kibana.dev.yml` generation, port substitution, placeholder removal, server block stripping, switching between local/remote |
 | `test-es-detection` | Grep pattern matching for both YAML formats (template + oblt-cli), localhost/127.0.0.1 filtering, commented lines, edge cases |
 | `test-run-data` | Credential parsing, remote detection, concurrency reduction, password defaults, synthetics guard |
 | `test-arg-parsing` | `kbn-start.sh` flag parsing, `switch`/`new` flag parsing, port reservation logic |
@@ -413,3 +428,10 @@ The tests use a lightweight bash framework (`tests/test-helpers.sh`) — no exte
 - **`list` only shows active sessions** — dead sessions are filtered out of the port assignments table automatically.
 - **Remote ES: `kibana_system_user` can't write data** — `run-data.sh` uses the `elastic` superuser automatically. If you get 401 errors, verify the `elastic` user has the same password as your config.
 - **encryptedSavedObjects errors with remote ES** — expected. Alerts from a different Kibana instance were encrypted with a different key. Harmless — new rules you create locally work fine.
+
+## Design decisions & deliberate limits
+
+Things that look like missing features but were left out on purpose. Add new entries here (date, decision, why, what it would take to lift it).
+
+- **`--serverless` cannot be combined with `--remote`** *(Oct 2026)* — rejected with an error. `--remote` generates a stateful-style config from `~/.kibana-remote-es.yml` and `kbn-start.sh` launches `yarn start`; serverless launches `yarn serverless-<type>`. Accepting both would silently ignore one of them, and "serverless + remote" most likely means *a remote serverless project*, which needs its own handling. **To lift:** a generator combining remote host/credentials with the serverless marker, a `kbn-start.sh` path that skips Docker ES and runs `yarn serverless-<type>` against the remote host, and `renew`/`sync` leaving those worktrees alone. Also check that the stateful version-mismatch flags (`ignoreVersionMismatch` etc.) are valid on serverless Kibana, and how remote serverless credentials are issued.
+- **`kibana-main` has no `--serverless` option** *(Oct 2026)* — `--serverless` exists only on `switch` and `new`. `kibana-main` is permanent and starts with every `dev-start.sh` run, and serverless ES uses fixed Docker container names (`es01`…, `uiam`, `uiam-cosmosdb`), so a serverless main would block serverless in every other session. **To lift:** `sync main --serverless[=type]` plus a guard that refuses when another serverless session is running (`restart main` already handles the marker).

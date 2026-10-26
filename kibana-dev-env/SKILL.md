@@ -136,8 +136,8 @@ Run all commands as `~/dev-start.sh <command>`:
 | Command | What it does |
 |---------|-------------|
 | *(no args)* | Start/attach all sessions + auto-recover orphaned worktrees |
-| `switch <branch> [--remote]` | **Destructive** — kills kibana-feat, removes its worktree, creates a new one |
-| `new <branch> [--full] [--remote]` | **Non-destructive** — creates an additional session alongside existing ones |
+| `switch <branch> [--remote\|--serverless[=oblt\|security\|es]]` | **Destructive** — kills kibana-feat, removes its worktree, creates a new one |
+| `new <branch> [--full] [--remote\|--serverless[=type]]` | **Non-destructive** — creates an additional session alongside existing ones |
 | `attach <branch>` | Attach to an existing session |
 | `kill <branch>` | Kill session + remove worktree |
 | `kill-all` | Kill ALL kibana-* sessions |
@@ -195,6 +195,19 @@ manually). `kbn-start.sh` detects the remote URL and skips local ES startup.
 Fleet config (agent policies, Fleet Server, package installations) is also included
 in the remote `kibana.dev.yml` — the Fleet ES output host points to the remote
 cluster instead of `host.docker.internal`.
+
+**Serverless** — `--serverless[=oblt|security|es]` (default `oblt`) writes a minimal
+`kibana.dev.yml` with a `# Serverless: <type>` marker and an `https://localhost:<es-port>`
+host. `kbn-start.sh` detects it, runs `yarn es serverless --kill --projectType <mapped> --port <es-port>`
+(Docker, HTTPS; `oblt`→`observability`, `es`→`elasticsearch`) in pane 0, waits for ES
+health, then starts `yarn serverless-<type>` in pane 1. Serverless Kibana needs the mock
+IdP, so `--mockIdpPlugin.enabled=false` is dropped from `KBN_EXTRA_ARGS` (otherwise it
+dies with "`xpack.security.uiam.enabled` must be `true`"). Only one serverless session at
+a time (fixed container names: `es01…`, `uiam`, `uiam-cosmosdb`). `restart`/`kill`/`switch`
+remove those containers rather than killing the port. Not available for `kibana-main`.
+Memory is heavy (Docker ES nodes + one optimizer per Kibana): `list` prints a memory summary
+and warns; stop idle sessions, use `restart <s> --no-watch`, and check `docker stats --no-stream`
+(ES heap is fixed per node; Docker's memory setting is a ceiling that bounds VM growth, ~10-12 GB is enough).
 
 ### Credential renewal flow
 
