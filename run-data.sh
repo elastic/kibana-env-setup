@@ -1095,6 +1095,44 @@ except: pass
         # when no other instance is using port 8220).
         local FLEET_PORT=$(( 8220 + KIBANA_PORT - 5601 ))
         local exit_code
+
+        # Kibana's default Fleet Server host (xpack.fleet.fleetServerHosts in kibana.dev.yml) is what
+        # gets pushed to agents. If it doesn't point at this instance's FLEET_PORT (e.g. a worktree
+        # config generated before the per-port template still says 8220), the agent enrolls but then
+        # sits "Updating" with "connection refused". Preconfigured hosts can't be edited via the API.
+        # Echoes the configured host URLs on mismatch; nothing when they match or can't be read.
+        _fleet_host_mismatch() {
+          curl -s --max-time 10 "$KIBANA_URL/api/fleet/fleet_server_hosts" -H "kbn-xsrf: true" -u "$AUTH" 2>/dev/null \
+            | python3 -c "
+import sys, json
+try:
+    items = json.load(sys.stdin).get('items', [])
+    d = next((i for i in items if i.get('is_default')), None)
+    urls = d.get('host_urls', []) if d else []
+    if urls and not any(u.rstrip('/').endswith(':${FLEET_PORT}') for u in urls):
+        print(', '.join(urls))
+except Exception:
+    pass
+" 2>/dev/null
+        }
+        _fleet_host_fix_hint() {
+          echo "   Kibana's default Fleet Server host is ${1}, but this instance's Fleet Server is on :${FLEET_PORT}."
+          echo "   Agents get the Kibana host, so they can't reach the container (connection refused → stuck 'Updating')."
+          echo "   Fix: in config/kibana.dev.yml set"
+          echo "     xpack.fleet.fleetServerHosts: [{ id: default-fleet-server, ..., host_urls: ['https://host.docker.internal:${FLEET_PORT}'] }]"
+          echo "   (or: sed -i '' 's/host.docker.internal:[0-9]*/host.docker.internal:${FLEET_PORT}/' config/kibana.dev.yml)"
+          echo "   then: run-data synthetics reset → restart Kibana → run-data synthetics"
+        }
+        local fh_mismatch=""
+        if [[ "$USE_LEGACY_PL" != true ]]; then
+          fh_mismatch="$(_fleet_host_mismatch)"
+          if [[ -n "$fh_mismatch" ]]; then
+            echo "❌  Fleet Server host mismatch — not starting containers."
+            _fleet_host_fix_hint "$fh_mismatch"
+            return 1
+          fi
+        fi
+
         if [[ "$USE_LEGACY_PL" == true ]]; then
         node x-pack/scripts/synthetics_private_location.js \
           --elasticsearch-host "${ES_HOST}" \
@@ -1215,6 +1253,10 @@ except Exception:
               echo "⚠  No synthetics agent enrolled. Check Fleet → Agents." ;;
             *)
               echo "⚠  Synthetics agent status: ${agent_status} (not healthy)."
+              if [[ "$USE_LEGACY_PL" != true ]] && fh_mismatch="$(_fleet_host_mismatch)" && [[ -n "$fh_mismatch" ]]; then
+                _fleet_host_fix_hint "$fh_mismatch"
+                return $exit_code
+              fi
               echo "   Open Fleet → Agents → the agent → Components. If synthetics/* are FAILED with"
               echo "   'seccomp policy is already registered', the cached agent image is stale/broken:"
               echo "     docker pull docker.elastic.co/elastic-agent/elastic-agent-complete:<ver>-SNAPSHOT"

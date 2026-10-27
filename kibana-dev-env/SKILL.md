@@ -294,6 +294,10 @@ vanished after Docker closed, they were `--rm` containers from the stock script 
 same port into `xpack.fleet.fleetServerHosts` in `kibana.dev.yml` (`__FLEET_SERVER_PORT__` in the
 template). A worktree generated earlier still has `8220` there: agents then stay "Updating"/
 "Unhealthy" because they check in to another instance's Fleet Server — edit the port and restart Kibana.
+`run-data synthetics` now detects this (default `fleet_server_hosts` ≠ this instance's port): it aborts
+before starting containers (and re-checks if the agent ends up unhealthy), printing the exact fix.
+The host is preconfigured, so the Fleet API returns 403 on PUT — only `kibana.dev.yml` can change it.
+Order: edit yml → `run-data synthetics reset` → restart Kibana → `run-data synthetics`.
 
 For remote ES, it auto-reduces concurrency (payload 1000, concurrency 1,
 events-per-cycle 10) to avoid timeouts.
