@@ -220,5 +220,41 @@ it "port stays consistent after local→remote→local"
   assert_eq "5601" "$port"
 
 
+# ══════════════════════════════════════════════════════════
+#  SERVERLESS CONFIG (--serverless flag)
+# ══════════════════════════════════════════════════════════
+
+eval "$(sed -n '/^generate_serverless_kibana_dev_yml()/,/^}/p' "$PROJECT_DIR/dev-start.sh")"
+eval "$(sed -n '/^get_serverless_type()/,/^}/p' "$PROJECT_DIR/dev-start.sh")"
+eval "$(sed -n '/^parse_serverless_flag()/,/^}/p' "$PROJECT_DIR/dev-start.sh")"
+
+describe "generate_serverless_kibana_dev_yml"
+
+worktree="$TEST_DIR/worktree-serverless-1"
+generate_serverless_kibana_dev_yml "$worktree" 5603 9202 security > /dev/null 2>&1
+yml="$worktree/config/kibana.dev.yml"
+
+it "writes ports in the format the restart/list/status greps expect, plus the type marker"
+  port=$(grep -E "^ *port:" "$yml" | head -1 | awk '{print $2}')
+  es_port=$(grep -E "^ *- \"?https?://localhost:" "$yml" | head -1 | sed 's|.*://localhost:||' | tr -d ' "')
+  assert_eq "5603/9202/security" "$port/$es_port/$(get_serverless_type "$worktree")"
+
+it "contains no stateful-only xpack keys"
+  assert_file_not_contains "$yml" "^xpack\."
+
+it "get_serverless_type is empty for a stateful config"
+  worktree="$TEST_DIR/worktree-serverless-2"
+  generate_kibana_dev_yml "$worktree" 5601 9200 > /dev/null 2>&1
+  assert_eq "" "$(get_serverless_type "$worktree")"
+
+it "parse_serverless_flag defaults to oblt, accepts =type, rejects unknown"
+  SERVERLESS_TYPE=""; parse_serverless_flag "--serverless"
+  a="$SERVERLESS_TYPE"
+  parse_serverless_flag "--serverless=es"
+  b="$SERVERLESS_TYPE"
+  parse_serverless_flag "--serverless=bogus" > /dev/null 2>&1; rc=$?
+  assert_eq "oblt/es/1" "$a/$b/$rc"
+
+
 # ── Print results ─────────────────────────────────────────
 print_summary
